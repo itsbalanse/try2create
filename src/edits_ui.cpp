@@ -490,7 +490,7 @@ int g_homeAnimFrame = -10; // the last frame a start-screen card was hovered (it
 void NoteEditsHomeAnimating() { g_homeAnimFrame = ImGui::GetFrameCount(); }
 bool EditsHomeAnimating() { return ImGui::GetFrameCount() - g_homeAnimFrame < 3; }
 
-// The start screen (the user, 2026-10-28: "that screen should have better visual navigation to what you want to do and examples"): a card for
+// The start screen (2026-10-28: the modes needed a visual way in, with examples): a card for
 // each kind of edit - a drawing of it (preset_art.cpp), what it is for, and examples - that opens it
 void DrawEditsHome(AppState& app, float height) {
     (void)app;

@@ -51,7 +51,7 @@ const char* const kUnet = "minimax_h3_fl2va_pruned_int8_convrot.safetensors";
 // Fast + Veda, a fresh ComfyUI each): about 90 s against 120 s, ComfyUI's RAM 27 GB against 32 GB at peak, the same picture held and timeline
 // followed (a touch calmer motion). The 360-degree orbit keeps kUnet (its LoRA was trained on it).
 const char* const kSingularity = "Minimax-h3_Singularity_ref2va_v1.3_Pruned_w4a8.safetensors";
-// Since 2026-10-26 (the user: "make this the default ref2va"), OliviaRossi's PRISM merge of Singularity ref2va v2 with TenStrip's 10Eros-Max
+// Since 2026-10-26 the default ref2va: OliviaRossi's PRISM merge of Singularity ref2va v2 with TenStrip's 10Eros-Max
 // 8-step turbo (about 55% of the turbo blended in), as its w6a8 file (15.9 GB: 6-bit weights, native in ComfyUI 0.42 - between the 4-bit
 // Singularity's 11.8 GB and int8's 19.3 GB). Tested (RTX 3090, 1152 x 640, 5 s, Veda, the rainy-street timeline, same seed): with the Fast
 // LoRA the same 11.3 s a step as Singularity, and clearly sharper (Singularity smeared a girl's arm; PRISM kept faces, hands and raindrops
@@ -291,7 +291,7 @@ json BuildH3(const H3Options& o, bool first, bool last, int w, int h) {
     return wf;
 }
 
-// ---- LTX-2.5 (Lightricks, LTX-2.x community licence; the user asked for it as a quality, 2026-10-23): Comfy-Org's video_ltx2_5_i2v template -
+// ---- LTX-2.5 (Lightricks, LTX-2.x community licence; a quality since 2026-10-23): Comfy-Org's video_ltx2_5_i2v template -
 // the distilled 22B model (int8), a first pass at half size (8 sigmas), the latent doubled by its spatial upscaler, 3 more sigmas, the sound
 // made with the picture. With an end picture, its FLF2V template instead: one pass at full size, the first and last frames as guides.
 // The repo is gated: its files are fetched with a Hugging Face login (they cannot be one-click downloads here).
@@ -523,7 +523,7 @@ const char* const kLongVideoSystem =
 // A long video, planned whole: the writer gives ONE timeline over the full length (beats that never cross a part's border), and the app cuts
 // it into the parts (SplitLongPlan), each a complete prompt in the short form with its beats on its own clock. Why: written part by part
 // (kLongVideoSystem) a 30 s video came back as "he does this, then this" per part - no timing, no detail - and the parts did not add up to
-// one story (the user's report, 2026-10-20). H3 Continuum's own guide says the same: invariants in every part, and each part its current
+// one story (seen 2026-10-20). H3 Continuum's own guide says the same: invariants in every part, and each part its current
 // state, a concrete next action and the end state the next part takes over.
 const char* const kLongPlanSystem =
     "You write prompts for MiniMax H3, an image-to-video model that makes video WITH sound. This video is {SECONDS} seconds long, one continuous "
@@ -1740,7 +1740,7 @@ struct Videos {
 Videos g_vid;
 
 // Videos taken off the list and moved to the Recycle Bin (with the files the app keeps next to them); the player lets go of one it shows.
-// The user asked to be able to clear out the videos made (2026-10-23): the Recycle Bin, so a wrong click can be undone.
+// Clearing out the videos made (2026-10-23): to the Recycle Bin, so a wrong click can be undone.
 void DeleteVideos(AppState& app, const std::vector<std::wstring>& videos) {
     if (videos.empty()) return;
     if (g_vid.player && g_vid.player->IsOpen())
@@ -1851,7 +1851,7 @@ void DrawPlayer(AppState& app, float boxH) {
     if (ID3D11ShaderResourceView* srv = vp->Srv(); srv && vp->Width() > 0 && vp->Height() > 0) {
         const float s = std::min(w / vp->Width(), boxH / vp->Height());
         const ImVec2 a(p.x + (w - vp->Width() * s) * 0.5f, p.y + (boxH - vp->Height() * s) * 0.5f);
-        if (app.ShouldBlur(vp->Path())) { // NSFW (blurring on): its blurred still instead of the frames (the user: "also blur the video player")
+        if (app.ShouldBlur(vp->Path())) { // NSFW (blurring on): its blurred still instead of the frames (the player is blurred too)
             const AppState::LibThumb lt = app.LibraryThumb(vp->Path());
             if (lt.srv) dl->AddImage((ImTextureID)(intptr_t)lt.srv, a, ImVec2(a.x + vp->Width() * s, a.y + vp->Height() * s));
         } else {
@@ -2268,14 +2268,14 @@ FileDownload g_swapDl, g_swapTurboDl, g_omniDl, g_prismDl;
 // redraws a video's fine detail at 1080p or 2K with MiniMax H3 itself: the clip goes through H3's VAE at H3's own size (768p), the MiniMax H3
 // latent upscaler (LBH-123-AI) takes the latent to the new size, and FL2VA with the Open-H3 LoRA (its refiner + LightX2V Turbo + LMS Sharp, one
 // file made by tools\h3turbo\setup_open_h3.ps1) samples it again: 2 steps from sigma 0.7, Veda on when ComfyUI has it. Since 2026-10-28 instead of
-// FlashVSR+ (the user: "replace ... the crisp option and just remove it"). Tested on the RTX 3090 with my own 1344 x 768 H3 clip (a freckled woman
+// FlashVSR+. Tested on the RTX 3090 with a 1344 x 768 H3 test clip (a freckled woman
 // in a greenhouse): 5 s to 2560 x 1440 in 177 s, to 1920 x 1088 in 99 s; skin, lashes, knit and ferns redrawn and the face kept. The release
 // setting (3 steps from 0.909) aged the face and straightened the curls, and took 512 s at 1080p without Veda (324 s for 2 steps without it). The
 // prompt made no difference, so none is sent. 10 s in one pass filled the 24 GB and stalled; over 124 frames MMH3 Split Upscale samples a job
-// in 124-frame chunks that overlap by 22 with motion anchors (10 s at 2K: 481 s from cold, no seam to be seen). A job is at most 8 s (the user,
-// 2026-10-28: a 6 s video in two 3 s parts was wasteful; "the split should be done for like 8s and higher"); longer videos go in parts of up to
-// 8 s and at least 3 s ("maximum of 8 second parts and minimum 3 seconds"), each its own job, cross-faded over 8 frames (15.5 s in 5 s parts:
-// no visible join, the PC at 86-94 GB; 15 s jobs had taken ComfyUI to 110 GB, which the user said is fine).
+// in 124-frame chunks that overlap by 22 with motion anchors (10 s at 2K: 481 s from cold, no seam to be seen). A job is at most 8 s (2026-10-28: a 6 s video
+// in two 3 s parts was wasteful); longer videos go in parts of up to
+// 8 s and at least 3 s, each its own job, cross-faded over 8 frames (15.5 s in 5 s parts:
+// no visible join, the PC at 86-94 GB; 15 s jobs had taken ComfyUI to 110 GB, acceptable on a 128 GB PC).
 struct ScriptRun {
     std::atomic<bool> running{false}, finished{false};
     std::wstring log;
@@ -2495,7 +2495,7 @@ void PrepareCrisp(std::wstring video, int shortSide) {
     int cw = 0, ch = 0;
     CrispCanvas(vi.width, vi.height, cw, ch);
     // up to 8 s in one job; longer: parts of 8 s filled in order, 8 frames shared with the next for the cross-fade, and a last part under 3 s
-    // made 3 s from the one before (the user: "maximum of 8 second parts and minimum 3 seconds"; 9 s: 6 + 3, 17 s: 8 + 6 + 3)
+    // made 3 s from the one before (9 s: 6 + 3, 17 s: 8 + 6 + 3)
     std::vector<std::pair<int, int>> cuts; // start frame, frames
     if (total <= kCrispPartFrames) cuts.push_back({0, total});
     else {
@@ -3113,7 +3113,7 @@ void DrawMaskRow() {
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                 ImGui::SetTooltip("Each new person gets a pass of their own: their picture, their masks, their shots; the next person is swapped into "
                                   "that video. A render for each person.\n\nTested: swapping two at once put the wrong person in some shots in most "
-                                  "takes (Elena in the boy's close-up); one at a time put the right one in every shot, and kept the faces' expressions.");
+                                  "takes (Ava in the boy's close-up); one at a time put the right one in every shot, and kept the faces' expressions.");
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
             ImGui::SetTooltip("%s\n\nA part with hard cuts is swapped the usual way: the mask cannot follow people across a cut (tested: someone who first\n"
@@ -3141,11 +3141,11 @@ void DrawMaskRow() {
 
 // ---- The original's facial expressions on the swapped faces (LivePortrait, tools\liveportrait\setup_liveportrait.ps1, by the user's click).
 // The swap draws each new face from its picture and kept its expression: the girl's smile as she walks in and her open-mouthed surprise as
-// she falls came out as Elena with her mouth closed the whole time (the user saw it). LivePortrait moves a face that is already there: each
+// she falls came out with the new face's mouth closed the whole time. LivePortrait moves a face that is already there: each
 // swapped face is cropped, and the original's face in the same frame sets how open the mouth and the eyes are (retargeting by landmark ratios,
 // which do not depend on whose face it is), with the swap's own head pose kept; then it is pasted back. Tested 2026-10-17 on the cafeteria
-// take: taking the original's head motion too (the node's video mode) slid the new faces in their crops and widened Jax's eyes, and its raw
-// expression values made Elena squint; the ratios kept both faces clean and opened her mouth at the fall. Lips x1.3: on the user's rap clip
+// take: taking the original's head motion too (the node's video mode) slid the new faces in their crops and widened Ben's eyes, and its raw
+// expression values made Ava squint; the ratios kept both faces clean and opened her mouth at the fall. Lips x1.3: on a rap test clip
 // x1.6 opened the mouth 27% wider than the rapper's on average (x1.0 too little); the mouth then moved as much as his (0.10 against 0.106 of the
 // face's height) where the swap alone hardly moved it (0.02), and followed his (correlation +0.32 against +0.02). Faces are taken
 // largest first in the take and in the clip alike (the setup's fix: the node took them in detection order). About 60 s a person
@@ -3752,7 +3752,7 @@ std::string NoPronouns(const std::string& text) {
 
 
 // ---- several people at once (a picture each): <Subject k> is the person in <Picture k>, and each replaces someone else in the clip. The
-// user names who is who in their own words ("the girl with elena and the boy with jax") or picks it on each card; the writer matches the rest
+// user names who is who in their own words ("the girl with ava and the boy with ben") or picks it on each card; the writer matches the rest
 // against frames of the clip. (Before, every picture was taken as the same person: the second one was ignored.)
 const char* const kSwapPeopleSystem =
     "You look at frames of a video clip, in order: {FRAMES}\n"
@@ -3944,7 +3944,7 @@ std::string WriteSwapPromptMulti(const WriteJob& j, const std::wstring& clip, co
                     targets[k] = v, sexOld[k] = sex;
                 }
                 motion = NoPronouns(SwapField(out, "MOTION:"));
-                for (size_t k = 0; k < n && k < j.names.size(); ++k) { // (seen: "Elena walks through the cafeteria... lifts Jax")
+                for (size_t k = 0; k < n && k < j.names.size(); ++k) { // (seen: "Ava walks through the cafeteria... lifts Ben")
                     const std::string& nm = j.names[k];
                     if (nm.size() < 2) continue;
                     for (size_t at = 0; (at = [&] {
@@ -3972,7 +3972,7 @@ std::string WriteSwapPromptMulti(const WriteJob& j, const std::wstring& clip, co
         WriterRelease(session, false);
         SetWritePhase("");
     }
-    for (size_t k = 0; k < n && k < j.names.size(); ++k) { // a name means nothing to H3: its subject (seen: "Elena walks... lifts Jax")
+    for (size_t k = 0; k < n && k < j.names.size(); ++k) { // a name means nothing to H3: its subject (seen: "Ava walks... lifts Ben")
         const std::string& nm = j.names[k];
         if (nm.size() < 2) continue;
         const std::string tag = "<Subject " + std::to_string(k + 1) + ">";
@@ -3984,7 +3984,7 @@ std::string WriteSwapPromptMulti(const WriteJob& j, const std::wstring& clip, co
             i += tag.size() - 1;
         }
     }
-    // a target that is one of the new people's names is no target (seen: "Elena takes the woman's place" came back as "Replace Elena with
+    // a target that is one of the new people's names is no target (seen: "Ava takes the woman's place" came back as "Replace Ava with
     // <Subject 1>"): the clip person's sex is said instead
     for (size_t k = 0; k < n; ++k) {
         std::string low = targets[k];
@@ -4047,8 +4047,8 @@ std::string WriteSwapPromptMulti(const WriteJob& j, const std::wstring& clip, co
     p += " Each of them matches the guide's complete body movement, limb poses, hand contact, head direction and facial expressions naturally; their hair "
          "and clothing follow the moving body. Each keeps their own face, features and skin tone exactly as in their own picture (";
     for (size_t k = 0; k < n; ++k) p += (k == 0 ? "" : ", ") + subj(k) + " as " + pic(k);
-    // (tried 2026-10-17: "keeps their own identity ... but makes the facial expressions of the person they replace" put Elena in the boy's
-    // close-up and Jax in the girl's shots; the faces' expressions are said per shot instead, and LivePortrait moves mouths and eyes after)
+    // (tried 2026-10-17: "keeps their own identity ... but makes the facial expressions of the person they replace" put Ava in the boy's
+    // close-up and Ben in the girl's shots; the faces' expressions are said per shot instead, and LivePortrait moves mouths and eyes after)
     p += "): do not blend in the original performers' faces, hair, skin or clothes, and do not mix the new people up.";
     for (size_t k = 0; k < n; ++k) p += ReplaceAll(SwapBody(sexNew[k] + " " + sexOld[k]), "<Subject 1>", subj(k));
     p += " Do not use the reference pictures' backgrounds. No additional people, no added text or watermark.";
@@ -4158,9 +4158,9 @@ std::string WriteSwapPrompt(const WriteJob& j, const std::wstring& clip, const s
     return SwapPrompt(look.size() < 20 ? std::string() : look, target, motion, j, sexNew + " " + sexOld);
 }
 
-// Whom each named person replaces, read straight from the user's words - "replace the girl with Elena and the boy with Jax", "swap the man
-// for Jax", "Elena takes the woman's place and Jax the man's", "Elena as the dancer", "the girl becomes Elena" - so the names are never left to
-// the writer (it once gave back "Replace Elena with <Subject 1>"). A phrase is matched to the people found in the clip when it can be
+// Whom each named person replaces, read straight from the user's words - "replace the girl with Ava and the boy with Ben", "swap the man
+// for Ben", "Ava takes the woman's place and Ben the man's", "Ava as the dancer", "the girl becomes Ava" - so the names are never left to
+// the writer (it once gave back "Replace Ava with <Subject 1>"). A phrase is matched to the people found in the clip when it can be
 // ("the girl" -> "the girl in the pink floral top (woman)"). "" where the words do not say.
 std::vector<std::string> ReplacesFromIdea(const std::string& idea, const std::vector<std::string>& names, const std::vector<std::string>& found) {
     std::vector<std::string> out(names.size());
@@ -4217,7 +4217,7 @@ std::vector<std::string> ReplacesFromIdea(const std::string& idea, const std::ve
                     const size_t s = low.rfind(start, at - l.size());
                     if (s != std::string::npos && s + strlen(start) > from && s + strlen(start) <= at - l.size()) from = s + strlen(start);
                 }
-                for (const std::string& other : lnames) { // "... with Elena and the boy with Jax": after the previous name
+                for (const std::string& other : lnames) { // "... with Ava and the boy with Ben": after the previous name
                     if (other == nm || other.size() < 2) continue;
                     const size_t o = findName(other, 0);
                     if (o != std::string::npos && o < at - l.size() && o + other.size() > from) from = o + other.size();
@@ -4233,7 +4233,7 @@ std::vector<std::string> ReplacesFromIdea(const std::string& idea, const std::ve
                 const std::string l = link;
                 if (rest.rfind(l, 0) == 0) {
                     std::string p = rest.substr(l.size());
-                    if (l == " " && p.rfind("the ", 0) != 0) continue; // "Jax the man's" only
+                    if (l == " " && p.rfind("the ", 0) != 0) continue; // "Ben the man's" only
                     got = clean(p);
                     break;
                 }
@@ -4257,7 +4257,7 @@ std::vector<std::string> ReplacesFromIdea(const std::string& idea, const std::ve
             }
             if (score > best) best = score, pick = f;
         }
-        // only a phrase about a person ("a video with Elena dancing" names no one to replace)
+        // only a phrase about a person ("a video with Ava dancing" names no one to replace)
         static const char* const people[] = {"woman", "man", "girl", "boy", "lady", "guy", "person", "dancer", "singer", "kid", "child", "teen", "one", "student",
                                              "player", "rapper", "dude", "actor", "actress", "performer", "waiter", "waitress", "driver", "officer", "chef"};
         bool personish = best > 0;
@@ -4713,7 +4713,7 @@ const char* const kPeopleLabelSystem =
 // per shot - BuildPeopleMasks' first step), shown one frame per shot with everyone outlined, and the person each new person replaces is
 // clicked; the most prominent one is picked at first, and a pick is followed into the other shots by the colours of the person's clothes and
 // hair (a histogram of their pixels). Why: the prompt writer told the people apart from words shot by shot ("the man in front"), and the
-// user's swaps went wrong - on a 2-shot clip it echoed its instructions back for the first shot (nobody masked for 7.4 s) and in the last
+// test swaps went wrong - on a 2-shot clip it echoed its instructions back for the first shot (nobody masked for 7.4 s) and in the last
 // 0.6 s "the man in front" was another man, so the new person appeared only at the very end. Now nothing is guessed, and what will be
 // replaced is seen before anything is made.
 struct ScanPerson {
@@ -5034,7 +5034,7 @@ std::shared_ptr<PeopleScan> ScanPeople(std::wstring src, double start, double se
     return r;
 }
 
-// Where a long swap is cut into parts: each at most 10 s (the user's rule - a 15 s part fills a 24 GB card and pages: 20+ minutes for what
+// Where a long swap is cut into parts: each at most 10 s (a 15 s part fills a 24 GB card and pages: 20+ minutes for what
 // takes 7), cut where the clip itself cuts when there is a cut 4-10 s in (a join there cannot be seen), else into equal parts
 std::vector<std::pair<double, double>> PlanSwapParts(const std::wstring& src, double start, double seconds) {
     std::vector<double> cuts;
@@ -5504,10 +5504,10 @@ PeopleMask BuildPeopleMasks(const std::wstring& clip, int frames, int w, int h, 
             const double cx = sx / cnt / aw;
             const std::string sk = "<Subject " + std::to_string(k + 1) + ">";
             who += (who.empty() ? "" : " and ") + sk + (cx < 0.36 ? " on the left" : cx > 0.64 ? " on the right" : " in the centre");
-            // seen from behind, the model went by the guide: the original's dark hair and sweater from the back (the user saw it)
+            // seen from behind, the model went by the guide: the original's dark hair and sweater from the back (seen in a test)
             if (behind[s][k])
                 who += std::string(behind[s][k] == 1 ? ", seen from behind (" : ", seen from the side (") + sk + "'s own hair and clothes from <Picture " + std::to_string(k + 1) + ">, not the guide's)";
-            // their face too: the new face kept its picture's closed mouth through the girl's smile and her surprise as she trips (the user saw it)
+            // their face too: the new face kept its picture's closed mouth through the girl's smile and her surprise as she trips (seen in a test)
             if (!faces[s][k].empty()) who += ", " + faces[s][k];
             { // the same, as this person's own line (one person at a time: they are <Subject 1> in their pass)
                 char at[48];
@@ -5641,7 +5641,7 @@ PeopleMask BuildPeopleMasks(const std::wstring& clip, int frames, int w, int h, 
             for (size_t i = 0; i < px; ++i) fm[i] |= tmp[i] & tmp2[i];
         }
         // room for the new person: they are often wider than the one they replace (a man for a slim dancer, a coat, a shoulder bag), and what
-        // they draw outside the mask is the clip's again - the user saw Jax's bag fade in and out at the dancer's edge. Each person's mask is
+        // they draw outside the mask is the clip's again - a test showed Ben's bag fading in and out at the dancer's edge. Each person's mask is
         // widened by a share of their own width (more when their picture shows something they carry), never over someone else.
         for (size_t k = 0; k < picks[s].size(); ++k) {
             if (picks[s][k].empty() || (only >= 0 && static_cast<int>(k) != only)) continue;
@@ -5704,7 +5704,7 @@ PeopleMask BuildPeopleMasks(const std::wstring& clip, int frames, int w, int h, 
             std::vector<uint8_t> one(px * n, 0);
             mend(static_cast<int>(k), one);
             r.videos.push_back(writeMask(one, L"_p" + std::to_wstring(k + 1)));
-            // the others as they are in each frame (2 px more): the pass may not paint over them. Seen: Jax's grown mask reached over Elena
+            // the others as they are in each frame (2 px more): the pass may not paint over them. Seen: Ben's grown mask reached over Ava
             // where he sat next to her, and his denim sleeve and the yellow of his shirt came out on her jacket.
             std::vector<uint8_t> others(px * n, 0), grown(px);
             for (int s = 0; s < r.shots; ++s) {
@@ -5855,7 +5855,7 @@ int ShotKeptOriginal(const std::wstring& video, const SwapTake& t) {
 
 // A masked swap back from ComfyUI: the first new person, in the first shot, who does not look like their picture (asked of the prompt writer
 // with their picture and a crop of the take), or -1. Seen: the boy seen from behind came back with the original's dark hair and sweater -
-// redrawn, so ShotKeptOriginal passed it - instead of Jax's buzzed hair and denim shirt.
+// redrawn, so ShotKeptOriginal passed it - instead of Ben's buzzed hair and denim shirt.
 int ShotWrongPerson(const std::wstring& video, const SwapTake& t, int& subject) {
     if (t.boxes.empty() || t.shots.size() < 2 || t.peopleW <= 0 || !WriterConfigured()) return -1;
     const int n = t.shots.back(), w = t.peopleW, h = t.peopleH;
@@ -5919,7 +5919,7 @@ std::string WithShotTimeline(const std::string& prompt, const std::string& timel
 }
 
 // What a new person carries stays with them: "<Subject 1> keeps a brown leather messenger bag (as in <Picture 1>) in every frame". Seen:
-// the person the swap replaced had no bag, and once Jax's arm swung over it the model dropped the bag for the rest of the clip.
+// the person the swap replaced had no bag, and once Ben's arm swung over it the model dropped the bag for the rest of the clip.
 std::string WithCarriedThings(std::string prompt, size_t people) {
     static const char* const things[] = {"bag", "backpack", "purse", "satchel", "tote", "guitar", "umbrella", "cape", "cloak", "sword", "skateboard"};
     std::string add;
@@ -5981,7 +5981,7 @@ std::vector<float> RoomFor(const std::string& prompt, size_t people) {
 }
 
 // "the boy in the dark sweater sitting at a table" -> "the boy sitting at a table": the clothes and hair of the person being replaced find
-// them in the clip, but in the prompt they were drawn back onto the new person (Jax, seen from the side, came back with the original's dark
+// them in the clip, but in the prompt they were drawn back onto the new person (Ben, seen from the side, came back with the original's dark
 // hair and dark sweater in four takes; the test whose prompt said only "the boy sitting at a table" drew him right)
 std::string ShortTarget(const std::string& phrase) {
     static const char* const looks[] = {"shirt", "top", "sweater", "hoodie", "jacket", "coat", "dress", "skirt", "jeans", "pants", "trousers", "shorts",
@@ -6059,8 +6059,8 @@ std::string WithoutOldLooks(std::string prompt, size_t people) {
 
 // One person at a time: the prompt of person k's own pass, from the prompt for everyone - their look, whom they replace (said without that
 // person's clothes), their own shots and faces as <Subject 1>, and the body notes the prompt had for them. Tested 2026-10-17 on the cafeteria
-// clip: every take that swapped both at once put the wrong person in some shot (Elena in the boy's close-up, Jax in the girl's shots); the two
-// passes put the right one in every shot, kept the first pass's Elena through the second, and her smile and open-mouthed surprise came through.
+// clip: every take that swapped both at once put the wrong person in some shot (Ava in the boy's close-up, Ben in the girl's shots); the two
+// passes put the right one in every shot, kept the first pass's Ava through the second, and her smile and open-mouthed surprise came through.
 std::string OnePersonPrompt(const std::string& all, int k, size_t people, const std::string& timeline, const std::string& emphasis) {
     const std::string sk = "<Subject " + std::to_string(k + 1) + ">";
     const std::string tag = sk + " is the person shown in <Picture " + std::to_string(k + 1) + ">, ";
@@ -6168,7 +6168,7 @@ bool SendStar(AppState& app, const WriteJob& j, const std::string& prompt, const
     static const bool testNoMask = GetEnvironmentVariableW(L"MV_SWAP_NOMASK", nullptr, 0) > 0; // tests: the guide swap, to compare
     std::wstring peopleVideo, protectVideo;
     // ComfyUI not answering yet, but person masking is installed: wait for it (starting it) before choosing how to swap - chosen blind, the
-    // user's swap went out the old way, without masking and without the faces pass
+    // swap went out the old way, without masking and without the faces pass
     if (swap && g_v.swapMask && !testNoMask && !g_v.vedaKnown && MaskOk() && !people) {
         if (g_comfyWait.empty()) g_comfyWaitSince = ImGui::GetTime();
         g_comfyWait.push_back({j, prompt, clip, g_swapRetrying});
@@ -6742,8 +6742,8 @@ struct WhoPick {
     int descCard = -1;
     std::pair<int, int> descFor{-1, -1};
     std::map<std::wstring, LoadedImage> tex;     // the shots' outlined frames
-    // Only on the user's word: Find the people, or Make (ComfyUI and SAM 3 take the GPU and memory - the user saw them start by themselves
-    // as soon as a clip was chosen, 2026-10-22). askedKey: the part they were asked for; makeWhenReady: Make was pressed before they were found.
+    // Only on a click: Find the people, or Make (ComfyUI and SAM 3 take the GPU and memory - they had started by themselves as soon as a
+    // clip was chosen, 2026-10-22). askedKey: the part they were asked for; makeWhenReady: Make was pressed before they were found.
     std::string askedKey;
     bool makeWhenReady = false;
 } g_pick;
@@ -6922,7 +6922,7 @@ void PumpPick(AppState& app) {
 }
 
 // Who a pick stands for in its shot: the person clicked (or followed), and the pieces of their track SAM 3 lost and found again as a new
-// object - never on screen at the same time as them, and dressed alike. Seen on the user's clip: the man in front was object 0 for 134
+// object - never on screen at the same time as them, and dressed alike. Seen on a test clip: the man in front was object 0 for 134
 // frames and object 6 for the other 40 of the shot; the pick alone would have left him unmasked for 1.7 s.
 std::vector<int> PickedSet(size_t s, size_t k) {
     std::vector<int> out;
@@ -7003,7 +7003,7 @@ void DrawCastCard(AppState& app, size_t k, float w, int& remove) {
     snprintf(nb, sizeof(nb), "%s", name.c_str());
     ImGui::SetNextItemWidth(w);
     if (ImGui::InputTextWithHint("##name", "name", nb, sizeof(nb))) g_star.names[key] = nb;
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Their name: say who does what with it in your idea (\"Elena takes the girl's place\")");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Their name: say who does what with it in your idea (\"Ava takes the girl's place\")");
     // whom they replace: a swap's are clicked under Who they replace; Recreate says it in words
     if (g_starMethod == 0) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(kCastCol[k % 4]));
@@ -7136,14 +7136,14 @@ void DrawClipCard(AppState& app) {
 }
 
 // ---- Everything the best swap uses, in one place: what is ready, what is not, one button for all of it, and the restart ComfyUI needs.
-// (The user had six separate set-up buttons on the page and did not know which were needed; his swap then ran without person masking.)
+// (There had been six separate set-up buttons on the page with no word on which were needed; a swap then ran without person masking.)
 // The installs that run a script go one after another (two pip installs into ComfyUI's Python at once could clash); downloads go together.
 std::deque<int> g_setupQueue; // scripts still to run: 0 Veda, 1 person masking, 2 facial expressions
 
 bool MaskReady() { return g_v.vedaKnown && g_v.vedaInfo.maskvid && !g_v.vedaInfo.sam3.empty(); }
 
 // What is installed, read from ComfyUI Desktop's folders, for when ComfyUI is not running (the panel said only "Start ComfyUI to see what is
-// set up", with no button - the user could not find the set-up). Looked at again every 5 s.
+// set up", with no button - there was no way to the set-up). Looked at again every 5 s.
 struct OnDisk {
     double at = -1000.0;
     bool veda = false, mask = false, sam3 = false, faces = false;
@@ -7176,7 +7176,7 @@ bool VedaOk() { return g_v.vedaKnown ? VedaReady(kVedaStarPredictor) : StarOnDis
 bool MaskOk() { return g_v.vedaKnown ? MaskReady() : StarOnDisk().mask && StarOnDisk().sam3; }
 bool FacesOk() { return g_v.vedaKnown ? FacesReady() : StarOnDisk().faces; }
 
-// The best settings for a swap, from the tests on the user's rap clip (5 s, his elf character, RTX 3090):
+// The best settings for a swap, from tests on a rap clip (5 s, an elf character, RTX 3090):
 // - 1080p straight from H3 gave the face far more detail than 768p (a full-body performer's face is only ~3 x 4 of H3's 32 px tokens at
 //   768p) and took 496 s, against 195 s + 389 s for 768p and SeedVR2 to 1080p; past about 6 s, 1080p is too big for 24 GB (the 38 GB RAM case),
 //   so it is 768p and Make it crisp after
@@ -7400,7 +7400,7 @@ void DrawWhoTheyReplace(AppState& app) {
         ImGui::TextColored(ui::kAccentHover, "%s", g_pick.fut.valid() ? ("Finding the people in the clip" + (part.empty() ? std::string() : " (" + part + ")") + ": " +
                                                                          (phase.empty() ? std::string("...") : phase) + " (about a minute for each 15 s)").c_str()
                                                                      : "The people in the clip are found once the part stays put...");
-        // (seen: the user's earlier swap was still being made, and the search waited behind it in ComfyUI's queue with no word of why)
+        // (seen: an earlier swap was still being made, and the search waited behind it in ComfyUI's queue with no word of why)
         int videos = 0;
         if (g_pick.fut.valid() && app.comfySvc)
             for (const ComfyActivity& a : app.comfySvc->Activity())
@@ -7585,7 +7585,7 @@ void DrawStarMode(AppState& app, float footerH) {
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("The prompt writer looks at the marked part and lists who is in it: then each card can pick whom it replaces.\nOptional - "
-                              "your idea (\"Elena takes the girl's place\") does the same.");
+                              "your idea (\"Ava takes the girl's place\") does the same.");
         if (!g_people.empty()) { // (the line stays open only when something follows: the next heading drew on it)
             std::string list;
             for (const std::string& who : g_people) list += (list.empty() ? "" : ",  ") + who;
@@ -8089,7 +8089,7 @@ void OpenVideoPage(AppState& app, const std::wstring& first, const std::string& 
 // the camera goes once around the frozen character and lands back on the picture, so the clip loops, and orbit_view.cpp turns it like a
 // turntable. This is the cheap half of "picture -> H3 orbit -> 3D Gaussian splats -> rigged Gaussian VRM": no splat training, no rig.
 // Tested 2026-10-18 on the RTX 3090 (768 x 768, 73 frames, its prompt word for word): with the Fast (Wuli 4-step) LoRA it took 50 s and
-// turned Elena and a knight cleanly all the way round (his hammer stays on his back, her ponytail and boots too); Balanced (8 steps) was as
+// turned Ava and a knight cleanly all the way round (his hammer stays on his back, her ponytail and boots too); Balanced (8 steps) was as
 // good but scattered specks over the backdrop. The picture is made square by stretching its own left and right edges (a flat colour showed as
 // lighter panels beside a studio gradient), never cropped.
 namespace {
@@ -8904,7 +8904,7 @@ void DrawVideoTab(AppState& app, float height) {
             g_star.idea = "";
             {
                 char ib[1024] = {};
-                if (GetEnvironmentVariableA("MV_STAR_IDEA", ib, sizeof(ib))) g_star.idea = ib; // tests: the idea ("replace the girl with elena...")
+                if (GetEnvironmentVariableA("MV_STAR_IDEA", ib, sizeof(ib))) g_star.idea = ib; // tests: the idea ("replace the girl with ava...")
             }
             o.res = 0;
             o.seconds = 3;
@@ -9508,7 +9508,7 @@ void DrawVideoTab(AppState& app, float height) {
     ImGui::EndChild();
 }
 
-// The Edits page's Videos mode (the user, 2026-10-28: "the crisp upscale a video should have a place there"): the Video page's player with Make
+// The Edits page's Videos mode (2026-10-28: making a video crisp belongs with the other edits too): the Video page's player with Make
 // it crisp and the quick upscale under it, and the videos to pick from - the ones made here, or any file
 void DrawVideoEditsBody(AppState& app, float height) {
     if (!g_v.loaded) LoadSettings();

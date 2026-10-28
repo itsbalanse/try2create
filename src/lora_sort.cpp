@@ -2,7 +2,7 @@
 // and in Create a character, and the LoRA sorter (Tools menu), which moves the LoRA files into one folder per model inside ComfyUI's loras
 // folder ("Krea 2", "MOSS-Image"...), with a way to put them back.
 //
-// How the model is known (checked on the user's 26 LoRAs, 2026-10-20): most trainers write it into the file's header ("ss_base_model_version":
+// How the model is known (checked on 26 LoRAs, 2026-10-20): most trainers write it into the file's header ("ss_base_model_version":
 // krea2, moss_image, qwen_image_2, minimax_h3), but not all do (converted ones carry none, one carried a joke), so the shape of the weights
 // decides first - every model names its layers its own way:
 //   Krea 2         blocks.N.attn.wq / .gate (and txtfusion), 6144 wide

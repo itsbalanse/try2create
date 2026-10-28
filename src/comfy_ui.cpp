@@ -1135,8 +1135,7 @@ int ComfyJobTab(const std::string& label) {
     return 4;
 }
 
-// The status bar's ComfyUI tracker, on every page (the user, 2026-10-28: "an easier to follow progress tracker all across the map for jobs ...
-// instead of having to switch to the generate tab"): the job running now - its name, step, time a step and time left, or how long it has been
+// The status bar's ComfyUI tracker, on every page (2026-10-28: a job's progress could only be seen on the Generate page): the job running now - its name, step, time a step and time left, or how long it has been
 // going - and how many wait. Click: all of them, each with Stop / Cancel and its page. Draws nothing (and returns false) when nothing is on.
 bool DrawComfyTracker(AppState& app, float width) {
     if (!app.comfySvc) return false;

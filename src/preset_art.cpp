@@ -1,5 +1,5 @@
-// The Video page's motion-preset cards: a drawing for each idea (the user, 2026-10-28: "the idea cards are just confusing just a picture of his
-// face a bunch of times it should use its own custom svgs/art to describe hey it's that but visually"). A figure in the move's two key poses -
+// The Video page's motion-preset cards: a drawing for each idea (2026-10-28: each card had shown the last video made with it, so every card
+// showed the same face and said nothing about the move). A figure in the move's two key poses -
 // it swings between them while the card is hovered - with the idea's props (notes, a mic, a box, rain, an explosion...) on its own colours.
 // Everything is drawn with ImGui's draw list in a 100 x 70 box, so it stays sharp at any size.
 #include <algorithm>

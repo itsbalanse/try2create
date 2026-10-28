@@ -1,6 +1,6 @@
-// First-run setup: "Set up Try2Create" (the user, 2026-10-28: "make it as easy and as friendly for people launching this as possible ... I don't
-// want them going 'huh ... where do i put this, everything is an error'"). A fresh PC had nothing to tell it that ComfyUI is needed, no way to
-// get the models every page expects (on the author's PC they were put in by hand), no ffmpeg, and no word on what the GPU can run.
+// First-run setup: "Set up Try2Create" (2026-10-28: a first launch should be easy and friendly, with no file to put anywhere by hand and no
+// wall of errors). A fresh PC had nothing to tell it that ComfyUI is needed, no way to
+// get the models every page expects (they had to be put in by hand), no ffmpeg, and no word on what the GPU can run.
 // Five steps in one window: the PC (GPU, VRAM, RAM: what will run well), ComfyUI (found, or install / pick a portable folder / an address),
 // the models (packs of Comfy-Org's own files with their sizes, downloaded into ComfyUI's models folder), the helpers (ffmpeg), and what to
 // try first. It opens by itself on a first start when ComfyUI or the picture models are missing, and from Help > Set up Try2Create.
@@ -836,7 +836,7 @@ void DrawFirstRunSetup(AppState& app) {
             const char* at = strstr(buf, "setup:");
             OpenSetup(at ? atoi(at + 6) : 0);
         } else if (!SetupDone()) {
-            // (any Krea 2 or Qwen Image 2.1 model counts - the author's PC has a Krea merge and a GGUF, not Comfy-Org's exact files)
+            // (any Krea 2 or Qwen Image 2.1 model counts - a Krea merge or a GGUF instead of Comfy-Org's exact files is fine)
             const std::wstring models = ComfyModelsDir();
             bool any = false;
             std::error_code ec;

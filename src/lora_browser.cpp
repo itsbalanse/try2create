@@ -6,7 +6,7 @@
 // 480p clips (without / with, about a minute each). The "without" picture of a prompt is made once and shared by every LoRA of that model.
 // Kept in %LOCALAPPDATA%\Try2Create\lora_previews (index.json; the pictures stay where ComfyUI's results are fetched to).
 //
-// The showcase (the user, 2026-10-23: "a LoRA at 1.5 without its trigger words won't do anything"): of the user's 57 LoRAs one had its trigger
+// The showcase (2026-10-23: a LoRA at 1.5 without its trigger words does little): of 57 LoRAs tested, one had its trigger
 // word where trainers are meant to put it; others had it in their title ("sh1row", "In the style of 5h1ba"), their training captions, or only on
 // their Civitai page. So before a comparison its trigger words are gathered from all of these (Civitai asked by the file's SHA-256 - nothing else
 // is sent - and kept in civitai.json), and the prompt writer writes a prompt with them that shows what the LoRA is for (its character, a subject
@@ -100,7 +100,7 @@ const Preset kPicturePresets[] = {
     {"Scene", "A cozy living room in the evening: a sofa, a reading lamp, plants on the windowsill and a cat asleep on a cushion."},
     {"Object", "A ceramic coffee mug on a wooden table next to a notebook and a pen, morning light."},
 };
-// The standard prompt (the user asked for one, 2026-10-23): the same for every LoRA of a model, with that LoRA's trigger words in front, so the
+// The standard prompt (2026-10-23): the same for every LoRA of a model, with that LoRA's trigger words in front, so the
 // comparisons of different LoRAs can be set side by side. It has what most LoRAs change: two faces and hands, clothes, a place, light, objects.
 const char* kStandardPicture = "Two friends sit at a small table by a sunny cafe window: a young woman with freckles and long dark hair in a green sweater, "
                                "and a bearded man in a denim jacket holding a cup of coffee. A city street with trees outside, a plant and an open book on "
@@ -857,8 +857,7 @@ bool Thumb(AppState& app, const std::wstring& path, float w, float h, const char
     return clicked;
 }
 
-// ---- test mixes (the user, 2026-10-23: "select an image and just regenerate it same model but different 2-3 mixes of loras at different
-// strengths"): the picture's own ComfyUI workflow (inside the file) sent again with its seed, each time with one mix of LoRAs instead of its own
+// ---- test mixes (2026-10-23: a picture made again with the same model and seed, with 2-3 mixes of LoRAs at different strengths): the picture's own ComfyUI workflow (inside the file) sent again with its seed, each time with one mix of LoRAs instead of its own
 struct Mix {
     std::vector<LoraEntry> loras;
     int activity = 0;

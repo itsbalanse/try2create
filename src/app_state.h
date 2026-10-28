@@ -649,7 +649,7 @@ public:
     int charView = 0;          // Characters tab, Your characters: 0 list, 1 grid, 2 large grid
     float charTile = 96.0f;    // the grid's tile width (dp; Ctrl + mouse wheel)
     std::set<std::wstring> nsfwRevealed; // lowercased paths
-    // Your own call on a picture or video (the user, 2026-10-23: "my human eye is better at that stuff"): 1 NSFW (always blurred),
+    // Your own call on a picture or video (a person's eye beats the classifier): 1 NSFW (always blurred),
     // 0 not (never blurred), -1 none (its score decides). Kept in nsfw_marks.json.
     int NsfwMark(const std::wstring& path);
     void SetNsfwMark(const std::wstring& path, int mark);

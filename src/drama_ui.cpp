@@ -118,7 +118,7 @@ const Variant kVariants[] = {
     {"fp8", "drama3_fp8experts_bf16.safetensors", "FP8", 38.6, 48, "Fish Audio's own weights byte for byte, a little slower than int8 on a 3090"},
 };
 const char* const kCodec = "drama3_codec.safetensors";
-// Since 2026-10-26 (the user: "use a lower quant version ... make it work the fastest it can"): Drama 3 runs on audio.cpp
+// Since 2026-10-26 (a lower quant, for speed): Drama 3 runs on audio.cpp
 // (github.com/0xShug0/audio.cpp, its native server) from Jmica/Drama-3-GGUF's Q3 experts / Q8 backbone file, 18.9 GiB - on a 24 GB card
 // wholly on the GPU (Q4's 22.9 GiB would put experts on the CPU). ComfyUI only runs Try2Create's small Drama3GGUFGenerate node
 // (tools\drama3gguf), which hands the script to that server: ComfyUI no longer loads the 38.7 GB model and keeps no 35 GB of RAM.

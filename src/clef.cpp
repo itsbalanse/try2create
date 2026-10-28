@@ -63,7 +63,7 @@ fs::path UserToolsDir() {
     return fs::path(std::wstring(buf, n)) / L"Try2Create" / L"tools";
 }
 
-// A writer model of one's own, picked first: any GGUF in tools\bonsai (on the author's PC a ternary Bonsai 2 27B, 7.2 GB as PQ2_0, and its mmproj;
+// A writer model of one's own, picked first: any GGUF in tools\bonsai (for example a ternary Bonsai 2 27B, 7.2 GB as PQ2_0, and its mmproj;
 // a ternary model needs Prism ML's llama.cpp fork in tools\llama-prism - WriterExe).
 bool FindBonsaiFiles(std::wstring& model, std::wstring& mmproj) {
     std::error_code ec;

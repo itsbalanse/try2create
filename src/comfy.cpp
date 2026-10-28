@@ -1329,7 +1329,7 @@ static void BackgroundTree(DWORD root) {
     }).detach();
 }
 
-// ---- ComfyUI's scratch files off the Windows drive (2026-10-26: "you can't be using my main drive 100%"). Long videos (H3 Continuum's decode
+// ---- ComfyUI's scratch files off the Windows drive (2026-10-26: the Windows drive sat at 100% during long videos). Long videos (H3 Continuum's decode
 // cache, 2 GB a part), the upscalers' streamed frames (3.5 GB per 10 s at 1280 x 1920) and Python's temp files write tens of GB; on this PC
 // C: is a QLC SSD that slows to a crawl once its write cache fills, and 40 GB of Continuum caches had been left in %TEMP% by ComfyUI runs that
 // were stopped (a stopped process never cleans up). So the ComfyUI this app starts gets its temp folders on the fixed drive other than the
