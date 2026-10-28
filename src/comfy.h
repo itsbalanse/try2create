@@ -46,12 +46,13 @@ struct ComfySettings {
     bool showWindow = false;        // start mode 1: show the Desktop window
     std::wstring desktopExe;        // ComfyUI Desktop's program ("" = look for it)
     std::wstring outputDir;         // where ComfyUI saves what it makes ("" = look it up in ComfyUI Desktop's settings)
+    std::wstring comfyFolder;       // a ComfyUI that is not ComfyUI Desktop (the portable zip, a git clone): its folder ("" = ComfyUI Desktop's)
     int editStyle = 1;              // picture editing with characters: 0 = as asked, 1 = "nano banana" style (loose, natural, free to re-pose), 2 = fit everything to the scene (keeps face, body and character style)
     bool directOutfit = true;       // board scenes: name a concrete new outfit for every character (the model only changes clothes when told what to change)
     bool directPose = true;         // ...a concrete body posture
     bool directExpression = true;   // ...a concrete facial expression
     bool editJump = false;          // go to the Edits tab each time an edit is sent
-    std::string editUnet = "qwen_image_2.1_turbo_Q8_0.gguf"; // the Qwen model picture editing loads (a file in models/diffusion_models: .safetensors or .gguf; blank = find the standard Qwen Image 2.1 one)
+    std::string editUnet; // the Qwen model picture editing loads (blank, new settings: Comfy-Org's, the turbo first) (a file in models/diffusion_models: .safetensors or .gguf; blank = find the standard Qwen Image 2.1 one)
     std::vector<LoraEntry> editLoras{{"qwen2.1fun.safetensors", 0.7, true}}; // LoRAs of the built-in picture editing (Qwen), in this order
     std::vector<LoraEntry> promptLoras;  // LoRAs added to the ComfyUI workflow chosen in the ComfyUI tab (Krea or any other): put on the model that feeds its sampler(s)
     bool promptReplaceLoras = false;     // ...after taking out the LoRA loaders that workflow already has
@@ -104,6 +105,8 @@ double FreeRamGB();
 bool ComfyRunGraph(const std::string& url, const std::string& graphJson, const std::vector<std::pair<std::string, std::wstring>>& uploads,
                    const std::wstring& outDir, std::vector<std::wstring>& outFiles, std::string& error, int timeoutSec);
 std::wstring ComfyInstallDir(); // ComfyUI Desktop's install (holds ComfyUI\main.py, ComfyUI\.venv, standalone-env); "" = unknown
+void ComfySetFolder(const std::wstring& folder);  // the ComfyUI folder of the settings (comfyFolder): used when ComfyUI Desktop is not installed
+bool ComfyFolderValid(const std::wstring& folder, std::string* why); // is it a ComfyUI we can start (main.py and a Python)?
 // How long ComfyUI took to make a file, as recorded by this app when it was made (in %LOCALAPPDATA%\Try2Create\generation_times.json),
 // and what it was ("Video (Balanced, Veda): watch.png"). False = not known.
 bool ComfyGenerationTime(const std::wstring& file, double& seconds, std::string* what = nullptr);
@@ -132,7 +135,7 @@ std::string PickPixelModel(const std::vector<std::string>& checkpoints, int artS
 int PixelModelScale(const std::string& model);
 // Can pixel art be drawn by the ComfyUI tab's workflow? (a saved workflow or a file is chosen there: "ComfyUI's last run" could be anything, even one of this app's own jobs)
 bool ComfyHasDrawWorkflow(const ComfySettings& settings);
-std::string ComfyDrawWorkflowName(const ComfySettings& settings); // "krea2_turbo_uncensored"
+std::string ComfyDrawWorkflowName(const ComfySettings& settings); // the saved workflow picked for drawing, without ".json" ("my_krea_workflow")
 
 bool LoadComfySettings(ComfySettings& settings);
 void SaveComfySettings(const ComfySettings& settings);

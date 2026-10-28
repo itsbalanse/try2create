@@ -1114,6 +1114,8 @@ void DrawComfyJobProgress(int activityId) {
     }
 }
 
+void EnsureComfyService(AppState& app) { EnsureComfy(app); }
+
 // The page a job belongs on, from its label (the tracker's "Show it" button): videos, songs, drama, edits... else Generate
 int ComfyJobTab(const std::string& label) {
     auto starts = [&](std::initializer_list<const char*> ps) {

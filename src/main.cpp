@@ -4454,6 +4454,7 @@ void DrawMenuBar(AppState& app) {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Help")) {
+        if (ImGui::MenuItem("Set up Try2Create...")) OpenSetup(0);
         if (ImGui::MenuItem("Keyboard shortcuts")) g_showShortcuts = true;
         if (ImGui::MenuItem("Open settings and cache folder")) OpenDataFolder();
         if (ImGui::MenuItem("Crash and freeze reports")) {
@@ -4682,6 +4683,10 @@ void DrawStatusBar(AppState& app) {
     if (app.IsVisionFolderScanning()) jobs.push_back({"Vision: finding images", 0, 0, true, 9});
     if (app.IsQualityRunning()) jobs.push_back({"Scoring quality", app.QualityCurrent(), app.QualityTotal(), true, 10});
     {
+        int done = 0, total = 0;
+        if (SetupDownloadProgress(done, total)) jobs.push_back({"Downloading models (GB)", done, total, true, 11});
+    }
+    {
         const VisionService::Snapshot vs = app.vision.GetSnapshot();
         if (vs.busy && vs.total > 1) jobs.push_back({"Vision", vs.current, vs.total, true, 8});
     }
@@ -4724,6 +4729,7 @@ void DrawStatusBar(AppState& app) {
             else if (it->kind == 8) app.vision.Cancel();
             else if (it->kind == 9) app.CancelVisionFolder();
             else if (it->kind == 10) app.CancelQualityJob();
+            else if (it->kind == 11) StopSetupDownloads();
             else app.CancelScrape();
         }
         ImGui::PopID();
@@ -4788,6 +4794,9 @@ void DrawWelcome(AppState& app, float height) {
     if (ui::PrimaryButton("Open folder...", ImVec2(ui::Dp(170.0f), ui::Dp(36.0f)))) PickFolder(app);
     ImGui::SameLine();
     if (ImGui::Button("Open image...", ImVec2(ui::Dp(150.0f), ui::Dp(36.0f)))) PickFile(app);
+    ImGui::SameLine();
+    if (ImGui::Button("Set up Try2Create...", ImVec2(ui::Dp(190.0f), ui::Dp(36.0f)))) OpenSetup(0);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("ComfyUI, the models and ffmpeg: what making pictures, edits and videos needs");
     ImGui::TextColored(ui::kTextDim, "or drag and drop a folder or image onto this window");
 
     if (!app.recentFolders.empty()) {
@@ -5538,6 +5547,7 @@ std::vector<PaletteCmd> PaletteCommands(AppState& app) {
     if (!app.IsNsfwJobRunning()) add("Tools", "Add a folder to the collection...", nullptr, [&app] { AddFolderToCollection(app); });
     add("Help", "Keyboard shortcuts", nullptr, [] { g_showShortcuts = true; });
     add("Help", "Open the settings and cache folder", nullptr, [] { OpenDataFolder(); });
+    add("Help", "Set up Try2Create (ComfyUI, models, ffmpeg)", nullptr, [] { OpenSetup(0); });
     add("Help", "About", nullptr, [] { g_showAbout = true; });
     return c;
 }
@@ -6296,6 +6306,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         DrawVisionWindow(app);
         DrawShortcutsPopup();
         DrawAboutPopup();
+        DrawSetup(app); // (the first-run setup: opens itself on a first start with nothing to make with)
 
         const ImGuiStyle& style = ImGui::GetStyle();
         const float statusH = g_fullscreen ? 0.0f : ImGui::GetFrameHeight() + style.ItemSpacing.y * 2.0f + 2.0f;

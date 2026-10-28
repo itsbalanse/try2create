@@ -26,6 +26,7 @@ struct ClefSettings {
 
 ClefSettings ClefGetSettings();           // a copy (thread safe)
 void ClefSetSettings(const ClefSettings& s);   // also saved to disk
+void ClefFindDownloaded();                     // the first-run setup downloaded llama.cpp / the writer model: use them (fills only what is unset)
 
 enum class ClefType { Choice = 0, Score = 1, Noul = 2 };
 

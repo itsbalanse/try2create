@@ -26,6 +26,13 @@ void NsfwMarkMenu(AppState& app, const std::wstring& path);
 // Under a job ComfyUI is generating: its step, time a step and time left (from the log of a ComfyUI this app started), and a warning when the
 // PC runs out of memory or the steps suddenly get much slower.
 void DrawComfyJobProgress(int activityId);
+void EnsureComfyService(AppState& app);             // ComfyUI's settings read and its service made (once)
+void OpenSetup(int step = 0);                       // setup_ui.cpp: the first-run setup window (Help > Set up Try2Create)
+void DrawSetup(AppState& app);                      // once a frame: opens itself on a first start that has nothing to make with
+bool SetupDownloading();                            // its model downloads are going
+bool SetupDownloadProgress(int& doneGb, int& totalGb); // GB done and in all, while they go
+void StopSetupDownloads();
+std::string SetupDownloadLine(float* frac);         // what they are at, for the status bar ("" = none)
 bool DrawComfyTracker(AppState& app, float width); // the status bar's ComfyUI jobs (any page): false when there are none
 void DrawPresetArt(ImDrawList* dl, int k, ImVec2 p, float w, float h, float t); // preset_art.cpp: the Video page's motion preset k drawn (t < 0: still)
 int ComfyJobTab(const std::string& label);         // the page a ComfyUI job belongs on

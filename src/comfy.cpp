@@ -801,7 +801,42 @@ struct HeadlessLaunch {
     std::string args;
 };
 
+// A ComfyUI of the user's own that is not ComfyUI Desktop (set in the first-run setup or Generate > ComfyUI): the Windows portable zip
+// (python_embeded\python.exe, ComfyUI\main.py) or a git clone with its venv (main.py, venv\ or .venv\). Read when Desktop is not installed.
+std::mutex g_folderMutex;
+std::wstring g_comfyFolder;
+
+bool FolderLaunch(const std::wstring& folder, HeadlessLaunch& h) {
+    if (folder.empty()) return false;
+    auto there = [](const std::wstring& p) { return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES; };
+    std::wstring root = folder;
+    while (!root.empty() && (root.back() == L'\\' || root.back() == L'/')) root.pop_back();
+    if (there(root + L"\\ComfyUI\\main.py")) { // the portable zip (or Desktop's own layout)
+        for (const std::wstring& py : {root + L"\\python_embeded\\python.exe", root + L"\\python_embedded\\python.exe", root + L"\\ComfyUI\\.venv\\Scripts\\python.exe",
+                                       root + L"\\ComfyUI\\venv\\Scripts\\python.exe", root + L"\\venv\\Scripts\\python.exe"})
+            if (there(py)) {
+                h.python = py;
+                break;
+            }
+        h.workDir = root;
+        h.mainPy = L"ComfyUI\\main.py";
+    } else if (there(root + L"\\main.py")) { // a git clone: main.py in the folder itself
+        for (const std::wstring& py : {root + L"\\venv\\Scripts\\python.exe", root + L"\\.venv\\Scripts\\python.exe"})
+            if (there(py)) {
+                h.python = py;
+                break;
+            }
+        h.workDir = root;
+        h.mainPy = L"main.py";
+    }
+    return !h.python.empty();
+}
+
 bool FindHeadless(HeadlessLaunch& h) {
+    { // a folder that was picked comes first (someone with both picked it on purpose)
+        std::lock_guard<std::mutex> lock(g_folderMutex);
+        if (!g_comfyFolder.empty() && FolderLaunch(g_comfyFolder, h)) return true;
+    }
     const std::wstring data = EnvW(L"APPDATA") + L"\\Comfy Desktop";
     std::string text;
     if (!ReadFileBytes(data + L"\\installations.json", text)) return false;
@@ -879,8 +914,25 @@ std::wstring ComfyModelsDir() {
             if (!dir.empty() && GetFileAttributesW(dir.c_str()) != INVALID_FILE_ATTRIBUTES) return dir;
         }
     }
-    const std::wstring own = h.workDir + L"\\ComfyUI\\models";
+    const std::wstring own = h.workDir + (h.mainPy == L"main.py" ? L"\\models" : L"\\ComfyUI\\models");
     return GetFileAttributesW(own.c_str()) != INVALID_FILE_ATTRIBUTES ? own : std::wstring();
+}
+
+void ComfySetFolder(const std::wstring& folder) {
+    std::lock_guard<std::mutex> lock(g_folderMutex);
+    g_comfyFolder = folder;
+}
+
+bool ComfyFolderValid(const std::wstring& folder, std::string* why) {
+    HeadlessLaunch h;
+    if (FolderLaunch(folder, h)) return true;
+    if (why) {
+        auto there = [](const std::wstring& p) { return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES; };
+        const bool main = there(folder + L"\\ComfyUI\\main.py") || there(folder + L"\\main.py");
+        *why = main ? "ComfyUI is there, but not its Python (python_embeded, or a venv next to it)"
+                    : "No ComfyUI in that folder: pick the one that holds ComfyUI\\main.py (the portable zip's folder) or main.py itself";
+    }
+    return false;
 }
 
 std::wstring ComfyInstallDir() {
@@ -1515,6 +1567,8 @@ bool LoadComfySettings(ComfySettings& s) {
     s.editSteps = std::clamp(j.value("editSteps", s.editSteps), 1, 200);
     s.editResolution = std::clamp(j.value("editResolution", s.editResolution), 0, 4096);
     s.outputDir = ToWide(j.value("outputDir", std::string()));
+    s.comfyFolder = ToWide(j.value("comfyFolder", std::string()));
+    ComfySetFolder(s.comfyFolder);
     s.desktopExe = ToWide(j.value("desktopExe", std::string()));
     s.pixelModels = ToWide(j.value("pixelModels", std::string()));
     s.promptNode = j.value("promptNode", std::string());
@@ -1534,7 +1588,7 @@ void SaveComfySettings(const ComfySettings& s) {
     };
     json j = {{"url", s.url}, {"useLastRun", s.useLastRun}, {"savedWorkflow", s.savedWorkflow}, {"autoImport", s.autoImport}, {"workflow", ToUtf8(s.workflowPath)}, {"randomSeed", s.randomSeed}, {"sendNegative", s.sendNegative},
               {"sendPicture", s.sendPicture}, {"count", s.count}, {"videoLength", s.videoLength}, {"defaultFps", s.defaultFps}, {"autoStart", s.autoStart},
-              {"closeWithApp", s.closeWithApp}, {"loraTriggers", s.loraTriggers}, {"vramHeadroom", s.vramHeadroom}, {"ramHeadroom", s.ramHeadroom}, {"background", s.background}, {"showWindow", s.showWindow}, {"startMode", s.startMode}, {"editStyle", s.editStyle}, {"editJump", s.editJump}, {"directOutfit", s.directOutfit}, {"directPose", s.directPose}, {"directExpression", s.directExpression}, {"editUnet", s.editUnet}, {"editModelRev", 2}, {"editLoras", lorasJson(s.editLoras)}, {"promptLoras", lorasJson(s.promptLoras)}, {"promptReplaceLoras", s.promptReplaceLoras}, {"upscaleLoras", lorasJson(s.upscaleLoras)}, {"kreaLoras", lorasJson(s.kreaLoras)}, {"qwenLoras", lorasJson(s.qwenLoras)}, {"mossLoras", lorasJson(s.mossLoras)}, {"h3Loras", lorasJson(s.h3Loras)}, {"editSteps", s.editSteps}, {"editResolution", s.editResolution}, {"outputDir", ToUtf8(s.outputDir)}, {"desktopExe", ToUtf8(s.desktopExe)}, {"pixelModels", ToUtf8(s.pixelModels)}, {"promptNode", s.promptNode}, {"negativeNode", s.negativeNode}};
+              {"closeWithApp", s.closeWithApp}, {"loraTriggers", s.loraTriggers}, {"vramHeadroom", s.vramHeadroom}, {"ramHeadroom", s.ramHeadroom}, {"background", s.background}, {"showWindow", s.showWindow}, {"startMode", s.startMode}, {"editStyle", s.editStyle}, {"editJump", s.editJump}, {"directOutfit", s.directOutfit}, {"directPose", s.directPose}, {"directExpression", s.directExpression}, {"editUnet", s.editUnet}, {"editModelRev", 2}, {"editLoras", lorasJson(s.editLoras)}, {"promptLoras", lorasJson(s.promptLoras)}, {"promptReplaceLoras", s.promptReplaceLoras}, {"upscaleLoras", lorasJson(s.upscaleLoras)}, {"kreaLoras", lorasJson(s.kreaLoras)}, {"qwenLoras", lorasJson(s.qwenLoras)}, {"mossLoras", lorasJson(s.mossLoras)}, {"h3Loras", lorasJson(s.h3Loras)}, {"editSteps", s.editSteps}, {"editResolution", s.editResolution}, {"outputDir", ToUtf8(s.outputDir)}, {"comfyFolder", ToUtf8(s.comfyFolder)}, {"desktopExe", ToUtf8(s.desktopExe)}, {"pixelModels", ToUtf8(s.pixelModels)}, {"promptNode", s.promptNode}, {"negativeNode", s.negativeNode}};
     std::error_code ec;
     fs::create_directories(fs::path(SettingsPath()).parent_path(), ec);
     std::ofstream out(SettingsPath(), std::ios::binary | std::ios::trunc);
@@ -2086,7 +2140,9 @@ bool BuildQwenEdit(const Endpoint& ep, const ComfySettings& s, const std::vector
             return false;
         }
     } else {
-        unet = PickChoice(info, "UNETLoader", "unet_name", {"qwen-image-2.1-UC-int8_convrot.safetensors", "qwen_image_2.1_int8_convrot.safetensors", "qwen_image_2.1_bf16.safetensors"},
+        // (the turbo first: the first-run setup downloads Comfy-Org's qwen_image_2.1_turbo_int8_convrot)
+        unet = PickChoice(info, "UNETLoader", "unet_name", {"qwen_image_2.1_turbo_int8_convrot.safetensors", "qwen-image-2.1-UC-int8_convrot.safetensors",
+                                                            "qwen_image_2.1_int8_convrot.safetensors", "qwen_image_2.1_turbo_bf16.safetensors", "qwen_image_2.1_bf16.safetensors"},
                           {"qwen-image-2.1", "qwen_image_2.1", "qwen_image_2_1"});
     }
     const std::string clip = PickChoice(info, "CLIPLoader", "clip_name", {"qwen3vl_8b_int8_convrot.safetensors", "qwen3vl_8b_bf16.safetensors"}, {"qwen3vl_8b"});
@@ -2141,7 +2197,7 @@ bool BuildQwenEdit(const Endpoint& ep, const ComfySettings& s, const std::vector
         latent = json::array({"21", 0});
     }
     out["30"] = {{"class_type", "KSampler"},
-                 {"inputs", {{"model", json::array({modelNode, 0})}, {"seed", seed}, {"steps", s.editSteps}, {"cfg", 1.0}, {"sampler_name", "euler"}, {"scheduler", "simple"},
+                 {"inputs", {{"model", json::array({modelNode, 0})}, {"seed", seed}, {"steps", unet.find("turbo") != std::string::npos && s.editSteps > 10 ? 6 : s.editSteps}, {"cfg", 1.0}, {"sampler_name", "euler"}, {"scheduler", "simple"},
                              {"positive", json::array({"20", 0})}, {"negative", json::array({"20", 1})}, {"latent_image", latent}, {"denoise", 1.0}}}};
     out["31"] = {{"class_type", "VAEDecode"}, {"inputs", {{"samples", json::array({"30", 0})}, {"vae", json::array({"3", 0})}}}};
     out["32"] = {{"class_type", "SaveImage"}, {"inputs", {{"images", json::array({"31", 0})}, {"filename_prefix", "Qwen_image_2.1"}}}};

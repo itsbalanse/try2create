@@ -56,8 +56,15 @@ fs::path ToolsDir() {
     return fs::path(std::wstring(path, n)).parent_path() / L"tools";
 }
 
-// The writer since 2026-10-23 (the user's pick): Ternary Bonsai 2 27B Uncensored Heretic (OS-Software; Qwen3.8-27B in ternary weights, 7.2 GB
-// as PQ2_0, the faster packing on an RTX 3090) and its mmproj, in tools\bonsai. It needs Prism ML's llama.cpp fork (tools\llama-prism).
+// tools the first-run setup downloads (llama.cpp, the writer model): %LOCALAPPDATA%\Try2Create\tools, where the app may always write
+fs::path UserToolsDir() {
+    wchar_t buf[MAX_PATH * 2] = {};
+    const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH * 2);
+    return fs::path(std::wstring(buf, n)) / L"Try2Create" / L"tools";
+}
+
+// A writer model of one's own, picked first: any GGUF in tools\bonsai (on the author's PC a ternary Bonsai 2 27B, 7.2 GB as PQ2_0, and its mmproj;
+// a ternary model needs Prism ML's llama.cpp fork in tools\llama-prism - WriterExe).
 bool FindBonsaiFiles(std::wstring& model, std::wstring& mmproj) {
     std::error_code ec;
     std::wstring m, mm;
@@ -71,18 +78,21 @@ bool FindBonsaiFiles(std::wstring& model, std::wstring& mmproj) {
     return true;
 }
 
-// The writer model: Bonsai when it is there, else Qwen3.5 9B from Unsloth's download folder (the Hugging Face cache): the Q8 file and its mmproj
+// The writer model: one's own in tools\bonsai when it is there, else the one the first-run setup downloads (Qwen3-VL 8B Instruct, Qwen's own GGUF,
+// Apache-2.0) in tools\writer - in %LOCALAPPDATA%\Try2Create\tools or next to the program: the model and its mmproj (it looks at pictures)
 void FindWriterFiles(std::wstring& model, std::wstring& mmproj) {
     if (FindBonsaiFiles(model, mmproj)) return;
-    wchar_t buf[MAX_PATH * 2] = {};
-    const DWORD n = GetEnvironmentVariableW(L"USERPROFILE", buf, MAX_PATH * 2);
     std::error_code ec;
-    const fs::path snaps = fs::path(std::wstring(buf, n)) / L".cache" / L"huggingface" / L"hub" / L"models--DavidAU--Qwen3.5-9B-The-Defiant-Fable-Uncensored-Heretic-NEO-IMATRIX-MAX-MTP-GGUF" / L"snapshots";
-    for (fs::directory_iterator s(snaps, ec), end; !ec && s != end; s.increment(ec)) {
-        for (fs::directory_iterator it(s->path(), ec), e2; !ec && it != e2; it.increment(ec)) {
-            const std::wstring name = it->path().filename().wstring();
-            if (name.rfind(L"mmproj", 0) == 0 && it->path().extension() == L".gguf") mmproj = it->path().wstring();
-            else if (it->path().extension() == L".gguf" && name.find(L"Q8_0") != std::wstring::npos) model = it->path().wstring();
+    for (const fs::path& dir : {UserToolsDir() / L"writer", ToolsDir() / L"writer"}) {
+        std::wstring m, mm;
+        for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+            if (it->path().extension() != L".gguf" || fs::file_size(it->path(), ec) < 100000000ull / 2) continue; // (a download still starting)
+            if (it->path().filename().wstring().rfind(L"mmproj", 0) == 0) mm = it->path().wstring();
+            else m = it->path().wstring();
+        }
+        if (!m.empty()) {
+            model = m, mmproj = mm;
+            return;
         }
     }
 }
@@ -92,10 +102,9 @@ void FindBundled(std::wstring& exe, std::wstring& model, std::wstring& mmproj) {
     const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH * 2);
     const fs::path dir = fs::path(std::wstring(path, n)).parent_path() / L"tools";
     std::error_code ec;
-    for (const wchar_t* sub : {L"llama-cpp-cuda", L"llama-cpp"}) { // the CUDA build first: Clef is instant on the GPU
-        if (fs::exists(dir / sub / L"llama-server.exe", ec)) {
-            exe = (dir / sub / L"llama-server.exe").wstring();
-            break;
+    for (const fs::path& base : {dir, UserToolsDir()}) { // (next to the program, else where the first-run setup puts it)
+        for (const wchar_t* sub : {L"llama-cpp-cuda", L"llama-cpp"}) { // the CUDA build first: Clef is instant on the GPU
+            if (exe.empty() && fs::exists(base / sub / L"llama-server.exe", ec)) exe = (base / sub / L"llama-server.exe").wstring();
         }
     }
     for (fs::directory_iterator it(dir / L"clef", ec), end; !ec && it != end; it.increment(ec)) {
@@ -209,6 +218,25 @@ HANDLE g_process = nullptr;
 HANDLE g_job = nullptr;
 
 } // namespace
+
+// The first-run setup downloaded llama.cpp or the writer model: use them now (only what is not set yet, or no longer there)
+void ClefFindDownloaded() {
+    ClefSettings s = ClefGetSettings();
+    bool changed = false;
+    std::error_code ec;
+    if (s.exe.empty() || !fs::exists(s.exe, ec)) {
+        std::wstring exe, model, mm;
+        FindBundled(exe, model, mm);
+        if (!exe.empty()) s.exe = exe, changed = true;
+        if (exe.find(L"cuda") != std::wstring::npos) s.gpuLayers = 99;
+    }
+    if (s.writerModel.empty() || !fs::exists(s.writerModel, ec)) {
+        std::wstring m, mm;
+        FindWriterFiles(m, mm);
+        if (!m.empty()) s.writerModel = m, s.writerMmproj = mm, changed = true;
+    }
+    if (changed) ClefSetSettings(s);
+}
 
 ClefSettings ClefGetSettings() {
     std::lock_guard<std::mutex> lock(g_mutex);

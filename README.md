@@ -31,6 +31,22 @@ More screenshots are in [docs/screenshots](docs/screenshots).
 - The models: each feature has a *Set up* button that downloads what it needs, with its size, when you first use it. Models come from
   their publishers under their own licences; none are in this repository.
 
+## Getting started
+
+1. Download `Try2Create.zip` from the latest [release](../../releases), unzip it anywhere and run `Try2Create.exe`.
+2. **Set up Try2Create** opens by itself the first time. It looks at your graphics card and RAM and says what will run well; finds ComfyUI
+   (or helps you install ComfyUI Desktop, or use a portable ComfyUI or one at another address); then offers the models as packs (Pictures,
+   Edits, Designs, Video, Music) with their sizes, ticking only what fits your PC. Only ComfyUI is required: skip any pack or helper and add
+   it later from *Help > Set up Try2Create*.
+3. The Gallery works straight away: open a folder of AI pictures to read their prompts and settings.
+
+## Changing it with Claude Code (or any AI assistant)
+
+The code is meant to be changed by asking. Clone the repo, open the folder in [Claude Code](https://claude.com/claude-code) and say what you
+want: "add a one-click app that turns a photo into a sticker", "remove the Drama page", "make Generate default to square pictures".
+[CLAUDE.md](CLAUDE.md) explains how the app is built, where each page lives, the conventions and how to test, so the assistant starts with
+the full picture. Run `build.bat` to try the result.
+
 ## Building it
 
 Install Visual Studio 2022 (or its Build Tools) with *Desktop development with C++*, then:

@@ -62,6 +62,7 @@ add_executable(Try2Create WIN32
     src/board_ui.cpp
     src/svg_icons.cpp
     src/preset_art.cpp
+    src/setup_ui.cpp
     src/comfy.cpp
     src/comfy_ui.cpp
     src/characters_ui.cpp
@@ -110,7 +111,7 @@ target_include_directories(Try2Create PRIVATE
 )
 
 target_link_libraries(Try2Create PRIVATE
-    d3d11 d3dcompiler dwmapi shlwapi comctl32 ole32 uuid shell32 windowscodecs winhttp dbghelp comdlg32 iphlpapi ws2_32
+    d3d11 dxgi d3dcompiler dwmapi shlwapi comctl32 ole32 uuid shell32 windowscodecs winhttp dbghelp comdlg32 iphlpapi ws2_32
 )
 
 set_target_properties(Try2Create PROPERTIES

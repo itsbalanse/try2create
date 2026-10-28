@@ -6,6 +6,7 @@
 #include <fstream>
 #include <mutex>
 #include <set>
+#include <vector>
 #include <regex>
 #include <windows.h>
 #include <mfapi.h>
@@ -86,14 +87,32 @@ double ReaderDuration(IMFSourceReader* reader) {
     return seconds;
 }
 
-// ---- ffmpeg fallback (WebM/MKV and codecs Windows lacks), used only when ffmpeg.exe is on the PATH ----
+// ---- ffmpeg fallback (WebM/MKV and codecs Windows lacks; joins, cuts, the quick upscale): the copy the first-run setup downloads
+// (%LOCALAPPDATA%\Try2Create\tools\ffmpeg, or tools\ffmpeg next to the exe), else ffmpeg.exe on the PATH. Not found is looked for again
+// a few seconds later (the setup may be downloading it); found is kept.
 std::wstring FindFfmpeg() {
-    static const std::wstring path = []() {
-        wchar_t buf[MAX_PATH];
-        const DWORD n = SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, buf, nullptr);
-        return n > 0 && n < MAX_PATH ? std::wstring(buf, n) : std::wstring();
-    }();
-    return path;
+    static std::mutex m; // (called from worker threads too)
+    std::lock_guard<std::mutex> lock(m);
+    static std::wstring found;
+    static ULONGLONG lookedAt = 0;
+    if (!found.empty()) return found;
+    if (lookedAt && GetTickCount64() - lookedAt < 5000) return found;
+    lookedAt = GetTickCount64();
+    std::vector<std::wstring> candidates;
+    wchar_t buf[MAX_PATH * 2];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH * 2);
+    if (n > 0 && n < MAX_PATH * 2) candidates.push_back(std::wstring(buf, n) + L"\\Try2Create\\tools\\ffmpeg\\ffmpeg.exe");
+    n = GetModuleFileNameW(nullptr, buf, MAX_PATH * 2);
+    if (n > 0 && n < MAX_PATH * 2) {
+        std::wstring exe(buf, n);
+        candidates.push_back(exe.substr(0, exe.find_last_of(L"\\/") + 1) + L"tools\\ffmpeg\\ffmpeg.exe");
+    }
+    for (const std::wstring& c : candidates) {
+        if (GetFileAttributesW(c.c_str()) != INVALID_FILE_ATTRIBUTES) return found = c;
+    }
+    n = SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, buf, nullptr);
+    if (n > 0 && n < MAX_PATH) found = std::wstring(buf, n);
+    return found;
 }
 
 // Runs a command line without a window and collects stdout (plus stderr when `mergeStderr`).
