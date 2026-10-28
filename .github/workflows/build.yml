@@ -7,6 +7,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write # (publishing a release on a v* tag)
+
 jobs:
   windows:
     runs-on: windows-latest
