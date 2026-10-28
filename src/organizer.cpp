@@ -193,8 +193,8 @@ OrganizeResult RunOrganize(const OrganizeOptions& opts, NsfwClassifier& classifi
     const std::wstring exeKey = Key(ExeDir());
     if (exeKey != srcKey && IsSameOrUnder(exeKey, srcKey)) excludedKeys.push_back(exeKey);
     // A destination nested inside the source must not be rescanned. (The
-    // reverse, a source inside the destination such as G:\AI Images\output
-    // -> G:\AI Images, is fine and must not exclude anything.)
+    // reverse, a source inside the destination such as D:\Pictures\output
+    // -> D:\Pictures, is fine and must not exclude anything.)
     if (!inPlace && IsSameOrUnder(dstKey, srcKey)) excludedKeys.push_back(dstKey);
     excludedKeys.push_back(Key(dstRoot / kDuplicatesDir)); // don't re-sort what was set aside
     auto isExcluded = [&](const fs::path& dir) {
