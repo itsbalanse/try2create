@@ -25,11 +25,11 @@ More screenshots are in [docs/screenshots](docs/screenshots).
 ## What you need
 
 - Windows 10 or 11, 64-bit
-- [ComfyUI](https://www.comfy.org/download) (ComfyUI Desktop is found by itself; a portable ComfyUI or another address can be set in *Generate > ComfyUI*)
+- [ComfyUI](https://www.comfy.org/download): ComfyUI Desktop is found by itself; a portable ComfyUI, a git clone or one at another address is picked in the setup
 - An NVIDIA GPU. Pictures and edits are fine on 12-16 GB; the video features want 24 GB.
 - Plenty of RAM for video (ComfyUI holds big models in RAM: 64 GB or more for MiniMax H3)
-- The models: each feature has a *Set up* button that downloads what it needs, with its size, when you first use it. Models come from
-  their publishers under their own licences; none are in this repository.
+- The models: the setup downloads the packs you pick (Pictures about 19 GB, Edits 17 GB, Designs 13 GB, Video 42 GB, Music 12 GB), and
+  the extras on a page have their own *Set up* button. Models come from their publishers under their own licences; none are in this repository.
 
 ## Getting started
 
