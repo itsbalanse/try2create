@@ -1,0 +1,39 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Configure
+        run: cmake -S . -B build-nmake -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build-nmake
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "dist/Try2Create"
+          New-Item -ItemType Directory -Force $out, "$out/models", "$out/tools" | Out-Null
+          Copy-Item build-nmake/bin/Try2Create.exe $out
+          Copy-Item vendor/onnxruntime/bin/*.dll $out
+          Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.txt $out
+          Copy-Item models/*.json, models/*.txt "$out/models"
+          Copy-Item tools/* "$out/tools" -Recurse
+          Compress-Archive -Path "$out/*" -DestinationPath dist/Try2Create.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Try2Create
+          path: dist/Try2Create.zip
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Try2Create.zip
