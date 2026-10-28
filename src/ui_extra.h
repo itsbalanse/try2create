@@ -28,7 +28,7 @@ void NsfwMarkMenu(AppState& app, const std::wstring& path);
 void DrawComfyJobProgress(int activityId);
 void EnsureComfyService(AppState& app);             // ComfyUI's settings read and its service made (once)
 void OpenSetup(int step = 0);                       // setup_ui.cpp: the first-run setup window (Help > Set up Try2Create)
-void DrawSetup(AppState& app);                      // once a frame: opens itself on a first start that has nothing to make with
+void DrawFirstRunSetup(AppState& app);                      // once a frame: opens itself on a first start that has nothing to make with
 bool SetupDownloading();                            // its model downloads are going
 bool SetupDownloadProgress(int& doneGb, int& totalGb); // GB done and in all, while they go
 void StopSetupDownloads();

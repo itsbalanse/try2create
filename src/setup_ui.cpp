@@ -826,7 +826,7 @@ std::string SetupDownloadLine(float* frac) {
 }
 
 // Once a frame: opens itself on a first start that has nowhere to make things (no ComfyUI, or none of the picture models), then draws it
-void DrawSetup(AppState& app) {
+void DrawFirstRunSetup(AppState& app) {
     EnsureComfyService(app);
     static bool first = true;
     if (first) {

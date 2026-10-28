@@ -6306,7 +6306,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         DrawVisionWindow(app);
         DrawShortcutsPopup();
         DrawAboutPopup();
-        DrawSetup(app); // (the first-run setup: opens itself on a first start with nothing to make with)
+        DrawFirstRunSetup(app); // (the first-run setup: opens itself on a first start with nothing to make with)
 
         const ImGuiStyle& style = ImGui::GetStyle();
         const float statusH = g_fullscreen ? 0.0f : ImGui::GetFrameHeight() + style.ItemSpacing.y * 2.0f + 2.0f;
