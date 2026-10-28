@@ -1,0 +1,19 @@
+people.onnx - person detector used by "Detect people in images"
+
+Model:    person_detect_v1.3_s (YOLOv8-small, one class: person, trained on anime artwork)
+Source:   https://huggingface.co/deepghs/anime_person_detection  (folder person_detect_v1.3_s, file model.onnx)
+Author:   DeepGHS
+License:  MIT (as stated on the model page)
+Size:     44,583,231 bytes
+SHA-256:  6DA88929438CD442E31E45FF4F934DD2D7EB9CF7A423C22885D650EE52550F90
+Metrics:  F1 0.86 at confidence 0.324 on the author's test set (that is the threshold in people.json)
+
+people.json holds the settings the app uses with it:
+  input_size   square size the image is letterboxed to (640)
+  threshold    minimum confidence for a detection (0.324)
+  nms_iou      overlapping boxes above this IoU count as one person (0.5)
+  person_class index of the "person" class in the model output (0)
+
+Any YOLOv8-style ONNX detector with output [1, 4 + classes, anchors] can be dropped in as
+people.onnx; set person_class to the class index for "person" (0 for a one-class model, 0 for COCO).
+Photographs are better served by a model trained on photos than by this anime-trained one.

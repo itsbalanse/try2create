@@ -1,0 +1,30 @@
+# build output
+build/
+build-nmake/
+dist/
+*.exe
+*.pdb
+*.obj
+*.ilk
+/*.dll
+
+# models and tools are downloaded by the app, never committed
+models/*.onnx
+*.safetensors
+*.gguf
+*.ckpt
+*.pt
+*.pth
+tools/llama-cpp/
+tools/llama-cpp-cuda/
+tools/llama-prism/
+tools/bonsai/
+tools/clef/
+tools/embed/
+tools/audiocpp/
+tools/photocraft/
+
+# local settings and anything made while testing
+*.ini
+*.csv
+test_*/

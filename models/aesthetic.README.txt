@@ -1,0 +1,18 @@
+aesthetic_*.onnx + aesthetic.json - picture quality ("Tools > Score picture quality")
+
+Two small models; the one that fits the picture is the one whose score is shown:
+
+aesthetic_clip.onnx   CLIP ViT-L/14 image encoder (4-bit weights, fp16 activations)
+                      Source: https://huggingface.co/Xenova/clip-vit-large-patch14  (onnx/vision_model_q4f16.onnx)
+                      Used for: (1) the general aesthetic score, and (2) telling anime / illustration from photos.
+aesthetic.json        The LAION "improved aesthetic predictor" head (a linear map of the normalised CLIP embedding, folded
+                      from its 5 linear layers into one vector), and two direction vectors from CLIP text prompts
+                      ("an anime illustration" / "a photograph") for the anime-vs-photo decision.
+                      Head: https://huggingface.co/trl-lib/ddpo-aesthetic-predictor (copy of christophschuhmann/improved-aesthetic-predictor, sac+logos+ava1-l14-linearMSE)
+aesthetic_anime.onnx  Anime aesthetic model by skytnt. Source: https://huggingface.co/skytnt/anime-aesthetic  (model.onnx)
+
+Scores are shown 0-10. general = the LAION score as it is (about 5.5 is average, 7+ is very good); anime = model output (0-1) * 10;
+Quality = anime-ness * anime + (1 - anime-ness) * general.
+The kind of picture (Realistic / photo, Anime / manga, Cartoon, 3D render, Painting / digital art, Pixel art, Sketch / line art)
+is picked zero-shot from the CLIP embedding with text-prompt direction vectors stored in aesthetic.json ("kind_vecs").
+Without these files everything else works; only the quality scoring is unavailable.

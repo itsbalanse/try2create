@@ -1,0 +1,30 @@
+#include "resource.h"
+#include <winver.h>
+
+IDI_APPICON ICON "../assets/app.ico"
+IDR_LOGO_PNG RCDATA "../assets/logo.png"
+1 24 "../assets/app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 2,0,0,0
+ PRODUCTVERSION 2,0,0,0
+ FILEOS 0x4L
+ FILETYPE 0x1L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "Try2Create"
+            VALUE "FileVersion", "2.0.0.0"
+            VALUE "InternalName", "Try2Create"
+            VALUE "OriginalFilename", "Try2Create.exe"
+            VALUE "ProductName", "Try2Create"
+            VALUE "ProductVersion", "2.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

@@ -1,0 +1,8 @@
+{
+  "_model": "AdamCodd/vit-base-nsfw-detector (huggingface.co), labels: 0 = sfw, 1 = nsfw",
+  "input_size": 384,
+  "mean": [0.5, 0.5, 0.5],
+  "std": [0.5, 0.5, 0.5],
+  "nsfw_index": 1,
+  "softmax": true
+}
