@@ -16,7 +16,7 @@ bool LoadImageTexture(ID3D11Device* device, const std::wstring& path, LoadedImag
 // Decodes an already-in-memory encoded image (e.g. bytes read back from a
 // persisted thumbnail file) and uploads it as-is, with no resizing.
 bool LoadImageTextureFromMemory(ID3D11Device* device, const unsigned char* data, size_t len, LoadedImage& out,
-                                 std::string* error);
+                                 std::string* error, std::vector<unsigned char>* outRawRGBA = nullptr);
 
 // Same as LoadImageTexture, but downsamples (area-averaged) so neither
 // dimension exceeds maxDim before uploading. Used for gallery thumbnails so

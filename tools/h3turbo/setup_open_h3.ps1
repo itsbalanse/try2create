@@ -14,7 +14,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$python = Join-Path $Install 'ComfyUI\.venv\Scripts\python.exe'
+$comfy = Join-Path $Install 'ComfyUI'
+if (Test-Path (Join-Path $Install 'main.py')) { $comfy = $Install } # (a git clone: main.py in the folder itself)
+$python = Join-Path $comfy '.venv\Scripts\python.exe'
+foreach ($p in 'python_embeded\python.exe', 'python_embedded\python.exe', 'ComfyUI\venv\Scripts\python.exe', 'venv\Scripts\python.exe', '.venv\Scripts\python.exe') { if (-not (Test-Path $python)) { $python = Join-Path $Install $p } } # (a portable ComfyUI, a git clone)
 $base = Join-Path $Models 'diffusion_models\minimax_h3_fl2va_pruned_int8_convrot.safetensors'
 $lora = Join-Path $Models 'loras\MiniMax H3\open_h3_regenerate_2k_comfyui.safetensors'
 $tmp = Join-Path $Temp 'open_h3'
@@ -22,7 +25,7 @@ $rev = '5809c33730c18b6b1c827b40974855a4288641b3'
 $files = @(
     @{ name = 'open_h3_regenerate_2k_lora.safetensors'; gb = '12.5'; sha = '8e36a0912ab72f7f3b00f41e3c7c97c7dfdec21e66c88ab22f08b9b0c681bb04' },
     @{ name = 'sharp_curve_branches.safetensors'; gb = '1.2'; sha = '26ff1c4ea50fc5b0cea252912b67ec308a65d534cef026ef56f415ae92102e4e' })
-$nodeDir = Join-Path $Install 'ComfyUI\custom_nodes\Comfyui_Minimax_h3_latent_Upscaler'
+$nodeDir = Join-Path $comfy 'custom_nodes\Comfyui_Minimax_h3_latent_Upscaler'
 $nodeCommit = '40316cf008b2fd8663263270669eb4da23f89d2c'
 $upName = 'minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors'
 $upSha = '4f57821f5837f32f7142b67d815606dbd7550f194e5c769f7d6c3f83b146a5e6'
@@ -60,7 +63,7 @@ try {
         Move-Item (Get-ChildItem $unz -Directory | Select-Object -First 1).FullName $nodeDir
         Remove-Item -Recurse -Force $zip, $unz
     }
-    $upDir = Join-Path $Install 'ComfyUI\models\latent_upscale_models'
+    $upDir = Join-Path $comfy 'models\latent_upscale_models'
     if (-not (Test-Path (Join-Path $upDir $upName)) -and -not (Test-Path (Join-Path $Models "latent_upscale_models\$upName"))) {
         New-Item -ItemType Directory -Force $upDir | Out-Null
         Fetch $upUrl (Join-Path $upDir $upName) $upSha 'the H3 latent upscaler model (0.7 GB)'

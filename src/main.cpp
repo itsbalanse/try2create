@@ -42,7 +42,10 @@
 #include "relation_import.h"
 #include "crash_log.h"
 #include "notify.h"
+#include "recycle_bin.h"
+#include "splat_view.h"
 #include "ui_extra.h"
+#include "library_ui.h"
 #include "clipboard_image.h"
 #include "video_util.h"
 #include "video_player.h"
@@ -73,6 +76,16 @@ static WINDOWPLACEMENT g_prevPlacement = {sizeof(WINDOWPLACEMENT)};
 static std::vector<std::wstring> g_dragOutPaths; // set while a thumbnail is being dragged; started after the frame
 static bool g_dragOutActive = false;
 static unsigned long long g_dragEndTick = 0;
+
+// Explorer files dropped on a page (WM_DROPFILES): the tile under the drop, then its page takes them on the next frame
+static bool g_chipsDragged = false; // the gallery's row of chips is being dragged sideways
+static ImVec4 g_tileRect[2] = {};
+static int g_tileTab[2] = {-1, -1};
+static int g_osDropTab = -1;
+static std::vector<std::wstring> g_osDropPaths;
+
+const char* PageTakesPictures(AppState& app, int tab, const std::vector<std::wstring>* paths); // (the tiling, below)
+void LayoutStep(AppState& app, bool back);                                                    // (the tiling: Ctrl+Z, Ctrl+Y)
 
 static void RunFileDragOut(HWND hwnd, const std::vector<std::wstring>& paths) {
     std::vector<PIDLIST_ABSOLUTE> pidls;
@@ -488,7 +501,8 @@ bool DrawThumbnailCell(AppState& app, int i, float cell, float labelH) {
         ImGui::SetDragDropPayload("MV_IMAGES", targets.data(), targets.size() * sizeof(int));
         ImGui::BeginTooltip();
         ImGui::Text("%d image%s", static_cast<int>(targets.size()), targets.size() == 1 ? "" : "s");
-        ImGui::TextDisabled(app.showFolderPane ? "Drop on a folder, or outside the window to copy elsewhere" : "Drop outside the window to copy elsewhere\n(View > Folder tree to move into folders)");
+        ImGui::TextDisabled(app.tiles[1] >= 0 ? "Drop on the other page to use it there, or outside the window to copy elsewhere"
+                            : app.showFolderPane ? "Drop on a folder, or outside the window to copy elsewhere" : "Drop outside the window to copy elsewhere\n(View > Folder tree to move into folders)");
         ImGui::EndTooltip();
         ImGui::EndDragDropSource();
     }
@@ -641,6 +655,9 @@ bool DrawThumbnailCell(AppState& app, int i, float cell, float labelH) {
                 const bool hasPrompt = !e.metadata.parsed.positivePrompt.empty();
                 if (ImGui::MenuItem(("Send prompt to ComfyUI" + plural).c_str(), nullptr, false, hasPrompt)) sendAll(true, true, true);
                 if (!e.metadata.isVideo && ImGui::MenuItem("Star in a video...")) StarInVideo(app, e.path);
+                if (ImGui::MenuItem("Use its LoRAs on Generate")) GenerateUseLoras(app, ReadImageMetadata(e.path));
+                if (!e.metadata.isVideo && ImGui::MenuItem("Extract characters from it...")) OpenCharacterExtract(app, e.path);
+                if (!e.metadata.isVideo && ImGui::MenuItem("Make it 3D...")) OpenThreeD(app, e.path);
                 if (ImGui::MenuItem("Test LoRA mixes on it...")) TestLoraMixesOn(app, e.path);
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Made again (its own ComfyUI workflow and seed) with 2-3 mixes of LoRAs, side by side");
                 if (ImGui::MenuItem(("Edit with Qwen Image 2.1..." + plural).c_str())) {
@@ -1138,6 +1155,7 @@ std::vector<int> FilterEntries(AppState& app, const std::vector<SearchTerm>& ter
     std::vector<int> visible;
     visible.reserve(app.entries.size());
     app.hiddenUnreadable = 0;
+    app.hiddenHelpers = 0;
     const AppState::GalleryFilters& f = app.filters;
     const std::wstring dirW = f.dir.empty() ? std::wstring() : Utf8ToWide(f.dir);
     std::vector<float> sem; // the similarity of every picture to the meaning query, when there is one
@@ -1145,9 +1163,13 @@ std::vector<int> FilterEntries(AppState& app, const std::vector<SearchTerm>& ter
     bool anyFilterActive = app.metadataMode != 0 || !terms.empty() || f.ActiveCount() > 0 || app.restrictActive || !sem.empty();
     for (int i = 0; i < static_cast<int>(app.entries.size()); ++i) {
         const ImageEntry& e = app.entries[i];
-        if (e.missing) continue;
+        if (e.missing || InBin(e.path)) continue;
         if (e.thumbReady && !e.thumbSrv && !app.showUnreadable) { // not a readable picture (damaged, or a stub file)
             ++app.hiddenUnreadable;
+            continue;
+        }
+        if (e.helper && !app.showHelpers) { // depth maps, masks and poses: not results (Filters shows them)
+            ++app.hiddenHelpers;
             continue;
         }
         if (anyFilterActive && !e.thumbReady) continue;
@@ -1407,12 +1429,7 @@ void BuildGridLayout(GridLayout& L, const AppState& app, const std::vector<int>&
 void DrawQuickFilters(AppState& app) {
     using F = AppState::GalleryFilters;
     F& f = app.filters;
-    const int active = f.ActiveCount();
-    char header[48];
-    if (active > 0) snprintf(header, sizeof(header), "Filters  (%d active)###filters", active);
-    else snprintf(header, sizeof(header), "Filters###filters");
-
-    if (!ImGui::CollapsingHeader(header)) return;
+    // (drawn inside the gallery's Filters panel)
 
     // Years / generators present, recomputed only when the entry list changes.
     static unsigned cachedEpoch = ~0u;
@@ -1563,10 +1580,6 @@ void DrawQuickFilters(AppState& app) {
     }
 
     if (ImGui::Checkbox("Show unreadable files", &app.showUnreadable)) app.SaveUiSettings();
-    ImGui::BeginDisabled(active == 0);
-    if (ImGui::SmallButton("Clear filters")) f.Clear();
-    ImGui::EndDisabled();
-    ImGui::Spacing();
 }
 
 // A small button that continues the current line when it fits and wraps to the next otherwise.
@@ -2072,8 +2085,8 @@ void DrawThumbnailGrid(AppState& app) {
         }
         ImGui::EndPopup();
     }
-    // ---- by meaning: the embedding model reads every picture once; the search text (or a picture) is compared with them
-    {
+    // ---- by meaning: the embedding model reads every picture once; the search text (or a picture) is compared with them (its switch is in Filters)
+    auto meaning = [&]() {
         // how many pictures have a vector: counted again only when the list or the index changed (a big folder takes a moment)
         static int indexed = 0, total = 0;
         static unsigned countedVer = ~0u;
@@ -2142,7 +2155,7 @@ void DrawThumbnailGrid(AppState& app) {
                 }
             }
         }
-    }
+    };
     if (searchHovered) {
         ImGui::SetTooltip(
             "Plain text: substring match on prompt/tags/filename\n"
@@ -2162,68 +2175,126 @@ void DrawThumbnailGrid(AppState& app) {
             "Combine multiple terms with commas; all must match.");
     }
 
-    static const char* kSortLabels[] = {"Name",       "Date (year, month)", "File size", "Generation method",
-                                         "NSFW score", "People in image",   "Model",     "Resolution", "Star rating", "Quality", "Style (photo, anime...)"};
-    const float dirWidth = ImGui::CalcTextSize("Descending").x + style.FramePadding.x * 2.0f;
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - dirWidth - style.ItemSpacing.x);
-    int sortIdx = static_cast<int>(app.sortMode);
-    if (ImGui::Combo("##sort", &sortIdx, kSortLabels, IM_ARRAYSIZE(kSortLabels))) {
-        app.sortMode = static_cast<AppState::SortMode>(sortIdx);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button(app.sortDescending ? "Descending" : "Ascending", ImVec2(dirWidth, 0))) {
-        app.sortDescending = !app.sortDescending;
+    if (app.semanticOn) { // (while searching by meaning: one line says so, and turns it off)
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ui::kAccent, "Searching by meaning");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Off##meaningoff")) app.semanticOn = false, ++app.semanticVersion;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Back to matching the words in prompts, tags and file names (Filters > Search by meaning)");
     }
 
-    ImGui::SetNextItemWidth(-1);
-    ImGui::SliderFloat("##thumbsize", &app.thumbnailSize, 60.0f, 220.0f, "Thumbnail size  %.0f");
-    {
-        // The two "does it have X" questions people ask most, right at the top.
-        static const char* kMeta[] = {"Metadata: any", "Metadata: yes", "Metadata: no"};
-        static const char* kDescribed[] = {"Described: any", "Described: yes", "Described: no"};
-        const float half = (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x) * 0.5f;
-        ImGui::SetNextItemWidth(half);
-        ImGui::Combo("##metamode", &app.metadataMode, kMeta, IM_ARRAYSIZE(kMeta));
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
-            ImGui::SetTooltip("Whether the image carries generation metadata (prompt, settings, workflow).\n\"Without metadata\" finds images that were stripped or never had any.");
+    // ---- what kind of picture, as chips (like Civitai's categories); the sort and Filters below them
+    using GF = AppState::GalleryFilters;
+    GF& gf = app.filters;
+    auto chip = [](const char* label, bool on) {
+        ImGui::PushStyleColor(ImGuiCol_Button, on ? ui::ChipActiveColor() : ui::ChipColor());
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ui::ChipHoverColor());
+        const bool hit = ImGui::Button(label);
+        ImGui::PopStyleColor(2);
+        return hit && !g_chipsDragged;
+    };
+    // (one row that scrolls sideways - the mouse wheel over it scrolls it, or a drag - instead of rows of chips)
+    ImGui::BeginChild("##gchips", ImVec2(0, ImGui::GetFrameHeight() + ui::Dp(2.0f)), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    if (ImGui::IsWindowHovered() && ImGui::GetIO().MouseWheel != 0.0f) ImGui::SetScrollX(ImGui::GetScrollX() - ImGui::GetIO().MouseWheel * ui::Dp(60.0f));
+    { // drag it sideways, from anywhere on the row (a drag that began on a chip does not press it)
+        static bool pressed = false;
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) pressed = true;
+        if (pressed && ImGui::IsMouseDragging(ImGuiMouseButton_Left, ui::Dp(4.0f))) g_chipsDragged = true;
+        if (g_chipsDragged) {
+            ImGui::SetScrollX(ImGui::GetScrollX() - ImGui::GetIO().MouseDelta.x);
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         }
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(-1);
-        ImGui::Combo("##describedmode", &app.filters.vision, kDescribed, IM_ARRAYSIZE(kDescribed));
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
-            ImGui::SetTooltip("Whether Vision (Ollama) already wrote something for the image.");
-        }
-        static const char* kKinds[] = {"Pics + videos", "Pictures only", "Videos only"};
-        const float third = (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x) * 0.5f;
-        ImGui::SetNextItemWidth(third);
-        ImGui::Combo("##kindmode", &app.filters.kind, kKinds, IM_ARRAYSIZE(kKinds));
-        ImGui::SameLine();
-        {
-            // style of the picture: photo / anime / cartoon ... (found by Tools > Score picture quality)
-            const int st = app.filters.style;
-            const std::string preview = st == 0 ? "Any style" : (st < 0 ? "Unclassified" : kStyleNames[st - 1]);
-            ImGui::SetNextItemWidth(-1);
-            if (ImGui::BeginCombo("##stylemode", preview.c_str())) {
-                if (ImGui::Selectable("Any style", st == 0)) app.filters.style = 0;
-                for (int k = 0; k < kStyleCount; ++k) {
-                    if (ImGui::Selectable(kStyleNames[k], st == k + 1)) app.filters.style = k + 1;
-                }
-                if (ImGui::Selectable("Not classified yet", st < 0)) app.filters.style = -1;
-                ImGui::EndCombo();
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Realistic / anime / cartoon / 3D ... found together with the quality score\n(Tools > Score picture quality). Scored pictures only.");
-        }
-        static const char* kPixel[] = {"Pixel art: shown", "Hide pixel art", "Only pixel art"};
-        ImGui::SetNextItemWidth((ImGui::GetContentRegionAvail().x - style.ItemSpacing.x) * 0.5f);
-        if (ImGui::Combo("##pixelmode", &app.filters.pixel, kPixel, IM_ARRAYSIZE(kPixel))) app.SaveUiSettings();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("The pixel art the Pixel art tab made (its \"_px\" files), and what it made on the way there (the PixelArt folder: drawings, masks, Retro Diffusion's pictures).\n"
-                              "Hide it to browse your pictures, or show only the pixel art. Remembered.");
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
-            ImGui::SetTooltip("MP4, WebM, MKV, MOV and AVI clips show a poster frame; ComfyUI videos keep their workflow.\nVideos without a workflow count as \"without metadata\".");
-        }
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseReleased(ImGuiMouseButton_Left)) pressed = false, g_chipsDragged = false;
     }
-    DrawQuickFilters(app);
+    if (chip("All##kall", gf.kind == 0 && gf.style == 0)) gf.kind = 0, gf.style = 0;
+    ImGui::SameLine(0, ui::Dp(4.0f));
+    if (chip("Pictures##kpic", gf.kind == 1)) gf.kind = gf.kind == 1 ? 0 : 1;
+    ImGui::SameLine(0, ui::Dp(4.0f));
+    if (chip("Videos##kvid", gf.kind == 2)) gf.kind = gf.kind == 2 ? 0 : 2;
+    for (int k = 0; k < kStyleCount; ++k) { // (photo, anime... from Tools > Score picture quality)
+        ImGui::SameLine(0, ui::Dp(4.0f));
+        if (chip(kStyleNames[k], gf.style == k + 1)) gf.style = gf.style == k + 1 ? 0 : k + 1;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Only this kind of picture (scored pictures only: Tools > Score picture quality)");
+    }
+    ImGui::SameLine(0, ui::Dp(4.0f));
+    if (chip("Not scored##kuns", gf.style < 0)) gf.style = gf.style < 0 ? 0 : -1;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Pictures whose kind is not known yet (Tools > Score picture quality finds it)");
+    const bool moreRight = ImGui::GetScrollX() < ImGui::GetScrollMaxX() - 1.0f, moreLeft = ImGui::GetScrollX() > 1.0f;
+    ImGui::EndChild();
+    if (moreLeft || moreRight) { // (a fade at the edge with more chips past it)
+        const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+        const ImU32 bg = ImGui::GetColorU32(ImGuiCol_WindowBg, 1.0f), clear = bg & 0x00FFFFFF;
+        const float fw = ui::Dp(28.0f);
+        if (moreRight) ImGui::GetWindowDrawList()->AddRectFilledMultiColor(ImVec2(b.x - fw, a.y), b, clear, bg, bg, clear);
+        if (moreLeft) ImGui::GetWindowDrawList()->AddRectFilledMultiColor(a, ImVec2(a.x + fw, b.y), bg, clear, clear, bg);
+    }
+    static const char* kSortLabels[] = {"Name",       "Date (year, month)", "File size", "Generation method",
+                                         "NSFW score", "People in image",   "Model",     "Resolution", "Star rating", "Quality", "Style (photo, anime...)"};
+    int sortIdx = static_cast<int>(app.sortMode);
+    const std::string sortPreview = std::string("Sort: ") + kSortLabels[std::clamp(sortIdx, 0, IM_ARRAYSIZE(kSortLabels) - 1)];
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize(sortPreview.c_str()).x + ImGui::GetFrameHeight() + style.FramePadding.x * 2.0f + ui::Dp(4.0f));
+    if (ImGui::BeginCombo("##sort", sortPreview.c_str(), ImGuiComboFlags_HeightLarge)) {
+        for (int k = 0; k < IM_ARRAYSIZE(kSortLabels); ++k)
+            if (ImGui::Selectable(kSortLabels[k], sortIdx == k)) app.sortMode = static_cast<AppState::SortMode>(k);
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine(0, ui::Dp(4.0f));
+    if (ImGui::Button(app.sortDescending ? "High to low" : "Low to high")) app.sortDescending = !app.sortDescending;
+    // Filters: everything else, in a panel that opens on the right (Civitai's way)
+    const int nActive = gf.ActiveCount() + (app.metadataMode != 0 ? 1 : 0) - (gf.kind != 0 ? 1 : 0) - (gf.style != 0 ? 1 : 0);
+    char fl[40];
+    snprintf(fl, sizeof(fl), nActive > 0 ? "Filters (%d)###gfilters" : "Filters###gfilters", nActive);
+    const float flW = ImGui::CalcTextSize(fl, nullptr, true).x + style.FramePadding.x * 2.0f;
+    ImGui::SameLine();
+    if (ImGui::GetContentRegionAvail().x >= flW) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - flW); // (at the right)
+    else ImGui::NewLine();                                                                                                              // (narrow: below)
+    if (nActive > 0) ImGui::PushStyleColor(ImGuiCol_Button, ui::ChipActiveColor());
+    if (ImGui::Button(fl)) ImGui::OpenPopup("##gfilterspop");
+    if (nActive > 0) ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Thumbnail size, metadata, generator, date, rating, folder... and search by meaning");
+    ImGui::SetNextWindowSize(ImVec2(ui::Dp(440.0f), 0.0f));
+    if (ImGui::BeginPopup("##gfilterspop")) {
+        auto group = [](const char* t) {
+            ImGui::Spacing();
+            ImGui::TextDisabled("%s", t);
+        };
+        auto pick3 = [&](const char* id, int& v, const char* a, const char* b, const char* c) {
+            ImGui::PushID(id);
+            if (chip(a, v == 0)) v = 0;
+            ImGui::SameLine(0, ui::Dp(4.0f));
+            if (chip(b, v == 1)) v = 1;
+            ImGui::SameLine(0, ui::Dp(4.0f));
+            if (chip(c, v == 2)) v = 2;
+            ImGui::PopID();
+        };
+        group("Thumbnail size");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::SliderFloat("##thumbsize", &app.thumbnailSize, 60.0f, 220.0f, "%.0f");
+        group("Generation metadata (prompt, settings, workflow)");
+        pick3("meta", app.metadataMode, "Any", "With it", "Without");
+        group("Described by Vision");
+        pick3("desc", gf.vision, "Any", "Described", "Not yet");
+        group("Pixel art (the Pixel art page's pictures)");
+        const int px = gf.pixel;
+        pick3("pix", gf.pixel, "Shown", "Hidden", "Only it");
+        if (px != gf.pixel) app.SaveUiSettings();
+        group("Depth maps, masks and poses");
+        if (ImGui::Checkbox("Show them too", &app.showHelpers)) app.filterEpoch++, app.SaveUiSettings();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("What ComfyUI saves along the way. Hidden by default (found by their file names and by how they look)");
+        group("Search by meaning (what the pictures show)");
+        meaning();
+        ImGui::Spacing();
+        ImGui::Separator();
+        DrawQuickFilters(app);
+        ImGui::Spacing();
+        if (ImGui::Button("Clear all filters", ImVec2(-1, 0))) {
+            const int keepPixel = gf.pixel;
+            gf = GF{};
+            gf.pixel = keepPixel; // (whether pixel art shows is a standing choice)
+            app.metadataMode = 0;
+        }
+        ImGui::EndPopup();
+    }
 
     // The filtered+sorted list is only rebuilt when something it depends on
     // changed; at 100k+ images doing it every frame would stall the UI.
@@ -2312,13 +2383,27 @@ void DrawThumbnailGrid(AppState& app) {
         }
     } else {
         ImGui::AlignTextToFramePadding();
+        if (ImGui::SmallButton("Top##gtop")) app.GalleryRemember(), app.gridToTop = true;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Back to the top of the gallery");
+        ImGui::SameLine(0, ui::Dp(4.0f));
+        ImGui::BeginDisabled(app.galleryBack.empty());
+        if (ImGui::SmallButton("Back##gback")) app.GalleryGoBack();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(app.galleryBack.empty() ? "Goes back to where you were, after opening a picture from another page or pressing Top" : "Back to where you were in the gallery");
+        ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Text, ui::kTextDim);
-        if (!anyFilterActive && app.hiddenUnreadable == 0) {
+        if (!anyFilterActive && app.hiddenUnreadable == 0 && app.hiddenHelpers == 0) {
             ImGui::Text("%d image%s", app.LiveCount(), app.LiveCount() == 1 ? "" : "s");
         } else {
             ImGui::Text("%d shown of %d", static_cast<int>(visible.size()), app.LiveCount());
         }
         ImGui::PopStyleColor();
+        if (app.hiddenHelpers > 0) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%d depth maps, masks, poses hidden)", app.hiddenHelpers);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Filters > Depth maps, masks and poses shows them");
+        }
         if (app.hiddenUnreadable > 0) {
             ImGui::SameLine();
             ImGui::TextDisabled("(%d unreadable hidden)", app.hiddenUnreadable);
@@ -2338,6 +2423,9 @@ void DrawThumbnailGrid(AppState& app) {
     DrawMakingStrip(app);
 
     ImGui::BeginChild("thumb_grid_scroll", ImVec2(ui::Dp(0.0f), -MakeBarHeight()), false);
+    if (app.gridToTop) app.gridToTop = false, ImGui::SetScrollY(0.0f);
+    if (app.gridScrollTo >= 0.0f) ImGui::SetScrollY(app.gridScrollTo), app.gridScrollTo = -1.0f;
+    app.gridScrollNow = ImGui::GetScrollY();
     if (visible.empty()) {
         ImGui::Spacing();
         ImGui::PushTextWrapPos(0.0f);
@@ -2392,7 +2480,14 @@ void DrawThumbnailGrid(AppState& app) {
     }
     const std::vector<GridRow>& rows = layout.rows;
 
-    if (app.scrollToSelected) {
+    if (app.gridFindFrames > 0) { // a jump from another page: in the middle of the view
+        --app.gridFindFrames;
+        auto it = std::find(visible.begin(), visible.end(), app.selectedIndex);
+        if (it != visible.end()) {
+            const GridRow& row = rows[layout.rowOfPos[it - visible.begin()]];
+            ImGui::SetScrollY(std::max(0.0f, base.y + row.y + row.h * 0.5f - ImGui::GetWindowHeight() * 0.5f));
+        }
+    } else if (app.scrollToSelected) {
         app.scrollToSelected = false;
         auto it = std::find(visible.begin(), visible.end(), app.selectedIndex);
         if (it != visible.end()) {
@@ -2539,6 +2634,7 @@ void DrawThumbnailGrid(AppState& app) {
         }
         if (!mq.active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered() && cellAt(toLocal(io.MousePos)) < 0) {
             mq.active = true;
+            g_boxSelecting = true;
             mq.moved = false;
             mq.start = toLocal(io.MousePos);
             SelLog(app, "marquee-start", static_cast<int>(io.MousePos.x * 10000 + io.MousePos.y));
@@ -2763,7 +2859,7 @@ void DrawImageViewer(AppState& app) {
     if (hovered && io.MouseWheel != 0.0f) {
         // Zoom around the cursor so the point under it stays put.
         float old = app.zoom;
-        float next = std::clamp(old * std::pow(1.18f, io.MouseWheel), std::min(fit, 0.05f), 40.0f);
+        float next = std::clamp(old * std::pow(1.18f, io.MouseWheel), std::min(fit, 40.0f), 40.0f); // (never below the fit: for a frame it drew smaller, then fit put it back, a flash)
         float k = next / old;
         float relX = io.MousePos.x - center.x - app.panX;
         float relY = io.MousePos.y - center.y - app.panY;
@@ -3090,7 +3186,8 @@ void DrawMetadataPanel(AppState& app) {
                 if (ImGui::Selectable("Star in a video (swap a person in a clip)...")) StarInVideo(app, path);
                 if (ImGui::Selectable("A song about it...")) MusicFromPicture(app, path, hasPrompt ? meta.parsed.positivePrompt : std::string());
                 ImGui::Separator();
-                if (ImGui::Selectable("Characters from it (each person or creature in it)...")) OpenCharacterExtract(app, path);
+                if (ImGui::Selectable("Extract characters from it (each person or creature)...")) OpenCharacterExtract(app, path);
+                if (ImGui::Selectable("Make it 3D...")) OpenThreeD(app, path);
                 ImGui::EndPopup();
             }
         } else if (hasPrompt) {
@@ -3191,6 +3288,32 @@ void DrawMetadataPanel(AppState& app) {
     if (!meta.parsed.negativeTags.empty() && ImGui::CollapsingHeader("Negative tags")) {
         DrawTagChips(meta.parsed.negativeTags, "negtags");
         ImGui::Spacing();
+    }
+
+    { // the LoRAs it was made with: copied, or put on Generate's list
+        static std::wstring at;
+        static size_t atFields = 0;
+        static std::vector<LoraEntry> used;
+        size_t fields = 0; // (the full read of a file comes after the slim one)
+        for (const RawField& rf : meta.rawFields) fields += rf.value.size();
+        if (at != sel.path || atFields != fields) at = sel.path, atFields = fields, used = LorasInPicture(meta);
+        if (!used.empty() && ImGui::CollapsingHeader(("LoRAs (" + std::to_string(used.size()) + ")###picloras").c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::SmallButton("Use them on Generate")) GenerateUseLoras(app, meta);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Puts them on Generate's LoRAs, at these strengths, for the model that made this picture");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Copy##picloras")) {
+                std::string text;
+                for (const LoraEntry& l : used) {
+                    char st[16];
+                    snprintf(st, sizeof(st), "%.2f", l.strength);
+                    text += (text.empty() ? "" : " ") + ("<lora:" + LoraDisplayName(l.name) + ":" + st + ">");
+                }
+                ImGui::SetClipboardText(text.c_str());
+                app.SetStatus("Copied " + std::to_string(used.size()) + (used.size() == 1 ? " LoRA" : " LoRAs"));
+            }
+            for (const LoraEntry& l : used) ImGui::TextWrapped("%s  %.2f", LoraDisplayName(l.name).c_str(), l.strength);
+            ImGui::Spacing();
+        }
     }
 
     if (ImGui::CollapsingHeader("Parameters", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -4295,6 +4418,15 @@ void DrawMenuBar(AppState& app) {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
+        if (ImGui::MenuItem("The layout before", "Ctrl+Z")) LayoutStep(app, true);
+        if (ImGui::MenuItem("The next layout", "Ctrl+Y")) LayoutStep(app, false);
+        if (ImGui::MenuItem("Tile pages side by side", nullptr, &app.tilePages)) {
+            if (!app.tilePages) app.tiles[0] = app.activeTab, app.tiles[1] = -1;
+            app.SaveUiSettings();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip("On: a page you open goes beside the one you are on (two side by side, like a tiling window manager).\nCtrl+click a page in the sidebar to open it on its own.");
+        ImGui::Separator();
         if (ImGui::MenuItem("Fit to window", "F")) app.fitToWindow = true;
         if (ImGui::MenuItem("Actual size (100%)", "Z")) {
             app.zoom = 1.0f;
@@ -4554,6 +4686,28 @@ void DrawToolbar(AppState& app) {
     const float eyeW = ImGui::GetFrameHeight() * 1.4f;
     const float x = ImGui::GetWindowContentRegionMax().x - eyeW;
     const float leftEnd = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
+    // ComfyUI's state as a pill beside it (Open Source Canvas's "● ComfyUI 0.42.0"): green and its version while it answers; a click opens its settings
+    if (app.comfySvc) {
+        const bool up = app.comfySvc->Reachable();
+        const std::string v = up ? app.comfySvc->Version() : std::string();
+        const std::string lbl = std::string("    ComfyUI") + (up ? (v.empty() ? "" : " " + v) : " is off") + "##comfypill";
+        const float pw = ImGui::CalcTextSize(lbl.c_str(), nullptr, true).x + style.FramePadding.x * 2.0f;
+        const float px = x - style.ItemSpacing.x - pw;
+        if (px > leftEnd + ui::Dp(24.0f)) {
+            ImGui::SameLine(px);
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            if (ImGui::Button(lbl.c_str())) {
+                app.requestTab = 4;
+                GenerateSubTab() = 3;
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip(up ? "ComfyUI is running at %s - click for its settings" : "ComfyUI is not running (%s) - it starts by itself when you make something; click for its settings",
+                                  app.comfy.url.c_str());
+            const float r = ui::Dp(3.5f);
+            ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + style.FramePadding.x + r + ui::Dp(1.0f), p.y + ImGui::GetFrameHeight() * 0.5f), r,
+                                                        ImGui::GetColorU32(up ? ui::kGood : ui::kTextDim), 12);
+        }
+    }
     if (x > leftEnd + ui::Dp(24.0f)) {
         ImGui::SameLine(x);
         const bool blurOn = app.blurNsfw;
@@ -4693,7 +4847,7 @@ void DrawStatusBar(AppState& app) {
 
     float cursorFromRight = rightEdge;
     { // ComfyUI's jobs first, at the right end (every page)
-        const float w = std::min(ui::Dp(460.0f), std::max(0.0f, rightEdge - leftEnd - ui::Dp(60.0f)));
+        const float w = std::min(ui::Dp(640.0f), std::max(0.0f, rightEdge - leftEnd - ui::Dp(60.0f)));
         bool any = false;
         if (app.comfySvc) {
             for (const ComfyActivity& a : app.comfySvc->Activity()) any = any || (a.state != ComfyState::Done && a.state != ComfyState::Failed);
@@ -5245,6 +5399,21 @@ void DrawNavIcon(ImDrawList* dl, int icon, ImVec2 c, float s, ImU32 col) {
             }
             break;
         }
+        case 19: { // the bin: a lid and a can
+            dl->AddLine(ImVec2(c.x - h * 0.85f, c.y - h * 0.62f), ImVec2(c.x + h * 0.85f, c.y - h * 0.62f), col, t);
+            dl->AddLine(ImVec2(c.x - h * 0.3f, c.y - h * 0.85f), ImVec2(c.x + h * 0.3f, c.y - h * 0.85f), col, t);
+            const ImVec2 can[] = {ImVec2(c.x - h * 0.62f, c.y - h * 0.5f), ImVec2(c.x - h * 0.45f, c.y + h * 0.9f), ImVec2(c.x + h * 0.45f, c.y + h * 0.9f), ImVec2(c.x + h * 0.62f, c.y - h * 0.5f)};
+            dl->AddPolyline(can, 4, col, ImDrawFlags_None, t);
+            break;
+        }
+        case 18: { // 3D: a cube
+            const float a = h * 0.95f, b = h * 0.5f;
+            const ImVec2 top(c.x, c.y - a), l(c.x - a, c.y - b), r(c.x + a, c.y - b), m(c.x, c.y), bl(c.x - a, c.y + b), br(c.x + a, c.y + b), bot(c.x, c.y + a);
+            const ImVec2 outline[] = {top, r, br, bot, bl, l};
+            dl->AddPolyline(outline, 6, col, ImDrawFlags_Closed, t);
+            dl->AddLine(l, m, col, t), dl->AddLine(r, m, col, t), dl->AddLine(m, bot, col, t);
+            break;
+        }
         case 13: // cancel: a cross
             dl->AddLine(ImVec2(c.x - h * 0.6f, c.y - h * 0.6f), ImVec2(c.x + h * 0.6f, c.y + h * 0.6f), col, t * 1.3f);
             dl->AddLine(ImVec2(c.x + h * 0.6f, c.y - h * 0.6f), ImVec2(c.x - h * 0.6f, c.y + h * 0.6f), col, t * 1.3f);
@@ -5276,9 +5445,11 @@ void DrawNavSidebar(AppState& app, float height) {
         {0, "Gallery", 0, 0, "Your pictures and their prompts"},
         {1, "Vision library", 1, 0, "What the vision model wrote about your pictures"},
         {13, "LoRAs", 17, 0, "Every LoRA: what it does side by side, and mixes of them tested on a picture"},
+        {15, "Recycle bin", 19, 0, "What you deleted with an x: get it back here until you close the app"},
         {4, "Generate", 4, 1, "Pictures, designs and videos from a prompt: Krea, Qwen, MOSS, your workflow, H3"},
         {6, "Edits", 6, 1, "Change pictures: Qwen edits, MOSS designs and box edits, text over a picture, upscale"},
         {10, "Video", 14, 1, "Videos with sound from a picture or a prompt (MiniMax H3)"},
+        {14, "3D", 18, 1, "One picture becomes a 3D object you can turn around (Idol)"},
         {11, "Sound", 15, 1, "Songs (MiniMax Music 3) and scenes with many voices (Fish Audio Drama 3)"},
         {9, "Pixel art", 9, 1, "Pixel art, sprite sets and animations"},
         {3, "Vision board", 3, 2, "Build a scene from characters, places and relations"},
@@ -5356,15 +5527,27 @@ void DrawNavSidebar(AppState& app, float height) {
         }
         ImGui::PushID(it.tab);
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("##navitem", ImVec2(innerW, rowH));
-        const bool hov = ImGui::IsItemHovered(), on = app.activeTab == it.tab;
-        if (ImGui::IsItemClicked()) {
-            app.activeTab = it.tab;
+        const bool pressed = ImGui::InvisibleButton("##navitem", ImVec2(innerW, rowH));
+        const bool hov = ImGui::IsItemHovered(), on = app.TabShown(it.tab) || (it.tab == 6 && app.TabShown(7)) || (it.tab == 11 && app.TabShown(12));
+        if (pressed && !ImGui::GetDragDropPayload()) { // (opens beside the page you are on; Ctrl+click: on its own)
             app.requestTab = it.tab;
+            app.requestAlone = ImGui::GetIO().KeyCtrl;
+        }
+        // held and dragged: it goes on the side of the screen it is let go over
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip)) {
+            const int page = it.tab;
+            ImGui::SetDragDropPayload("MV_NAVTAB", &page, sizeof(page));
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+            ImDrawList* fg = ImGui::GetForegroundDrawList();
+            const ImVec2 mp = ImGui::GetIO().MousePos, ts = ImGui::CalcTextSize(it.label), pad(ui::Dp(12.0f), ui::Dp(7.0f)), at(mp.x + ui::Dp(12.0f), mp.y + ui::Dp(8.0f));
+            fg->AddRectFilled(at, ImVec2(at.x + ts.x + pad.x * 2, at.y + ts.y + pad.y * 2), ImGui::GetColorU32(ImGuiCol_PopupBg), ui::Dp(8.0f));
+            fg->AddText(ImVec2(at.x + pad.x, at.y + pad.y), ImGui::GetColorU32(ImGuiCol_Text), it.label);
+            ImGui::EndDragDropSource();
         }
         // drag a picture over a page: it opens (to drop it there)
         if (ImGui::BeginDragDropTarget()) {
-            if (ImGui::GetDragDropPayload() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) app.requestTab = it.tab;
+            const ImGuiPayload* held = ImGui::GetDragDropPayload();
+            if (held && !held->IsDataType("MV_NAVTAB") && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) app.requestTab = it.tab;
             ImGui::EndDragDropTarget();
         }
         const ImVec2 q(p.x + innerW, p.y + rowH);
@@ -5377,6 +5560,7 @@ void DrawNavSidebar(AppState& app, float height) {
         const ImU32 col = on ? accentText : hov ? textCol : dimCol;
         const ImVec2 ic(collapsed ? p.x + innerW * 0.5f : p.x + ui::Dp(18.0f), p.y + rowH * 0.5f);
         DrawNavIcon(dl, it.icon, ic, icon, col);
+        if (it.tab == 15 && BinCount() > 0) dl->AddCircleFilled(ImVec2(ic.x + icon * 0.6f, ic.y - icon * 0.5f), ui::Dp(3.5f), accent); // (something to get back)
         if (!collapsed) {
             dl->AddText(ImVec2(p.x + ui::Dp(36.0f), p.y + (rowH - ImGui::GetFontSize()) * 0.5f), on ? textCol : (hov ? textCol : ImGui::GetColorU32(ImVec4(ui::kTextDim.x + 0.12f, ui::kTextDim.y + 0.12f, ui::kTextDim.z + 0.12f, 1.0f))), it.label);
             if (badge > 0) {
@@ -5391,7 +5575,7 @@ void DrawNavSidebar(AppState& app, float height) {
             dl->AddCircleFilled(ImVec2(ic.x + icon * 0.62f, ic.y - icon * 0.55f), ui::Dp(4.5f), accent, 12);
         }
         if (hov && !ImGui::GetDragDropPayload()) {
-            if (collapsed) ImGui::SetTooltip("%s  (%s)\n%s%s", it.label, TabShortcut(it.tab), it.hint, badge > 0 ? ("\n" + std::to_string(badge) + " running").c_str() : "");
+            if (collapsed) ImGui::SetTooltip("%s%s%s%s\n%s%s", it.label, *TabShortcut(it.tab) ? "  (" : "", TabShortcut(it.tab), *TabShortcut(it.tab) ? ")" : "", it.hint, badge > 0 ? ("\n" + std::to_string(badge) + " running").c_str() : "");
             else if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("%s\n%s", it.hint, TabShortcut(it.tab));
         }
         ImGui::PopID();
@@ -5454,8 +5638,8 @@ char g_paletteQuery[256] = {};
 std::vector<PaletteCmd> PaletteCommands(AppState& app) {
     std::vector<PaletteCmd> c;
     auto add = [&](const char* g, const std::string& n, const char* k, std::function<void()> f) { c.push_back({g, n, k ? k : "", std::move(f)}); };
-    static const char* kTabs[] = {"Gallery", "Vision library", "Workflows", "Vision board", "Generate", "Characters", "Edits", "Upscale", "Clef mode", "Pixel art", "Video", "Music", "Drama", "LoRAs"};
-    for (int t = 0; t < 14; ++t) add("Go to", kTabs[t], TabShortcut(t), [&app, t] { app.requestTab = t; });
+    static const char* kTabs[] = {"Gallery", "Vision library", "Workflows", "Vision board", "Generate", "Characters", "Edits", "Upscale", "Clef mode", "Pixel art", "Video", "Music", "Drama", "LoRAs", "3D", "Recycle bin"};
+    for (int t = 0; t < 16; ++t) add("Go to", kTabs[t], TabShortcut(t), [&app, t] { app.requestTab = t; });
     add("File", "Open folder...", "Ctrl+Shift+O", [&app] { PickFolder(app); });
     add("File", "Open image...", "Ctrl+O", [&app] { PickFile(app); });
     if (!app.currentFolder.empty()) add("File", "Reload the folder", "F5", [&app] { app.ReloadFolder(); });
@@ -5745,6 +5929,21 @@ void HandleShortcuts(AppState& app) {
             if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | static_cast<ImGuiKey>(ImGuiKey_1 + k))) app.requestTab = k;
         }
         if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_0)) app.requestTab = 9;
+        { // tests: MV_TEST_CTRLZ=N: Ctrl+Z at N seconds and again 5 s later (Ctrl cannot be posted to a window)
+            static double at = [] { char n[16] = {}; return GetEnvironmentVariableA("MV_TEST_CTRLZ", n, sizeof(n)) ? atof(n) : 0.0; }();
+            static int stage = 0;
+            ImGuiIO& tio = ImGui::GetIO();
+            if (at > 0.0 && ImGui::GetTime() > at + (stage / 2) * 5.0 && stage < 4) {
+                const bool down = stage % 2 == 0;
+                tio.AddKeyEvent(ImGuiMod_Ctrl, down);
+                tio.AddKeyEvent(ImGuiKey_Z, down);
+                ++stage;
+            }
+        }
+        if (!ImGui::GetIO().WantTextInput && app.activeTab != 3) { // (the Vision board has its own undo)
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Z)) LayoutStep(app, true);
+            if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Y) || ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Z)) LayoutStep(app, false);
+        }
         if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_Backslash)) {
             app.navCollapsed = !app.navCollapsed;
             app.SaveUiSettings();
@@ -5797,6 +5996,9 @@ static void CaptureWindowPlacement(AppState& app, HWND hwnd) {
 }
 
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // (tests: MV_TEST_NOLEAVE - posted mouse drags while the real cursor is elsewhere; Windows' mouse-leave would cut them)
+    static const bool noLeave = GetEnvironmentVariableW(L"MV_TEST_NOLEAVE", nullptr, 0) > 0;
+    if (noLeave && msg == WM_MOUSELEAVE) return 0;
     if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam)) return true;
 
     switch (msg) {
@@ -5830,6 +6032,28 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             HDROP drop = (HDROP)wParam;
             wchar_t path[MAX_PATH];
             const bool ours = g_dragOutActive || GetTickCount64() - g_dragEndTick < 1000; // our own thumbnails dropped back on us
+            POINT at = {};
+            DragQueryPoint(drop, &at);
+            int onPage = -1; // a page that takes pictures, under the drop: they go to it (the gallery opens them as before)
+            for (int k = 0; k < 2 && g_app; ++k)
+                if (g_tileTab[k] > 0 && g_tileTab[k] == g_app->tiles[k] && at.x >= g_tileRect[k].x && at.x < g_tileRect[k].z && at.y >= g_tileRect[k].y && at.y < g_tileRect[k].w &&
+                    PageTakesPictures(*g_app, g_tileTab[k], nullptr))
+                    onPage = g_tileTab[k];
+            if (!ours && onPage >= 0) {
+                std::vector<std::wstring> pics;
+                const UINT n = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+                for (UINT i = 0; i < n; ++i) {
+                    if (!DragQueryFileW(drop, i, path, MAX_PATH)) continue;
+                    std::wstring ext = std::filesystem::path(path).extension().wstring();
+                    for (auto& c : ext) c = static_cast<wchar_t>(towlower(c));
+                    if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".webp" || ext == L".bmp") pics.push_back(path);
+                }
+                if (!pics.empty()) {
+                    g_osDropPaths = std::move(pics), g_osDropTab = onPage;
+                    DragFinish(drop);
+                    return 0;
+                }
+            }
             if (!ours && DragQueryFileW(drop, 0, path, MAX_PATH) && g_app) {
                 OpenPathFromExplorer(*g_app, path);
             }
@@ -5953,6 +6177,528 @@ void MigrateAppData() {
     RunCaptureHidden(L"cmd.exe /c mklink /J \"" + oldDir + L"\" \"" + newDir + L"\"", out, true);
 }
 
+// One page, in the height it is given (a tile of the page area)
+void DrawPageBody(AppState& app, int tab, float h) {
+    switch (tab) {
+        case 0:
+            StarPickBar(app); // choosing who goes in a video (Star in a video): a floating bar over the gallery
+            if (app.currentFolder.empty()) {
+                DrawWelcome(app, h);
+            } else {
+                // A resizable table gives free drag-to-resize splitters between the
+                // gallery/viewer/metadata panes, so the gallery can be widened to see
+                // more thumbnails per row when browsing a large folder.
+                // The viewer and the info (prompt, settings) can each be folded to a strip at the right (the round "-" in their corner):
+                // just browsing, the thumbnails get the room.
+                ImGuiTableFlags layoutFlags = ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings;
+                const bool pane = app.showFolderPane, viewer = !app.galleryHideViewer, info = !app.galleryHideInfo;
+                const float strip = ui::Dp(28.0f);
+                const int folded = (viewer ? 0 : 1) + (info ? 0 : 1);
+                const float tableW = ImGui::GetContentRegionAvail().x - (folded ? folded * (strip + ImGui::GetStyle().ItemSpacing.x) : 0.0f);
+                char tableId[32];
+                snprintf(tableId, sizeof(tableId), "main_layout_%d%d%d", pane, viewer, info); // (its own layout for each set of panes)
+                if (ImGui::BeginTable(tableId, (pane ? 1 : 0) + 1 + (viewer ? 1 : 0) + (info ? 1 : 0), layoutFlags, ImVec2(tableW, h))) {
+                    if (pane) ImGui::TableSetupColumn("Folders", ImGuiTableColumnFlags_WidthStretch, 0.14f);
+                    ImGui::TableSetupColumn("Gallery", ImGuiTableColumnFlags_WidthStretch, 0.25f);
+                    if (viewer) ImGui::TableSetupColumn("Viewer", ImGuiTableColumnFlags_WidthStretch, 0.38f);
+                    if (info) ImGui::TableSetupColumn("Metadata", ImGuiTableColumnFlags_WidthStretch, 0.37f);
+                    ImGui::TableNextRow(0, h);
+                    int col = 0;
+                    if (pane) {
+                        ImGui::TableSetColumnIndex(col++);
+                        DrawFolderPane(app, h);
+                    }
+                    ImGui::TableSetColumnIndex(col++);
+                    ImGui::BeginChild("left_pane", ImVec2(0, h), true);
+                    DrawThumbnailGrid(app);
+                    ImGui::EndChild();
+
+                    if (viewer) {
+                        ImGui::TableSetColumnIndex(col++);
+                        ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::ViewerBackground());
+                        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(0.0f), 0));
+                        ImGui::BeginChild("center_pane", ImVec2(0, h), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+                        ImGui::PopStyleVar();
+                        if (ui::FoldButton("##foldviewer", "Fold the viewer away (the thumbnails get the room)")) app.galleryHideViewer = true, app.SaveUiSettings();
+                        DrawImageViewer(app);
+                        ImGui::EndChild();
+                        ImGui::PopStyleColor();
+                    }
+
+                    if (info) {
+                        ImGui::TableSetColumnIndex(col++);
+                        ImGui::BeginChild("right_pane", ImVec2(0, h), true);
+                        if (ui::FoldButton("##foldinfo", "Fold the prompt and settings away (just browsing)")) app.galleryHideInfo = true, app.SaveUiSettings();
+                        DrawMetadataPanel(app);
+                        ImGui::EndChild();
+                    }
+                    ImGui::EndTable();
+                }
+                if (!viewer) {
+                    ImGui::SameLine();
+                    if (ui::FoldStrip("##stripviewer", "Viewer", strip, h)) app.galleryHideViewer = false, app.SaveUiSettings();
+                }
+                if (!info) {
+                    ImGui::SameLine();
+                    if (ui::FoldStrip("##stripinfo", "Prompt & info", strip, h)) app.galleryHideInfo = false, app.SaveUiSettings();
+                }
+            }
+            break;
+        case 1: DrawVisionLibrary(app, h); break;
+        case 2: DrawWorkflowTab(app, h); break;
+        case 3: DrawBoardTab(app, h); break;
+        case 4: DrawComfyTab(app, h); break;
+        case 5: DrawCharactersTab(app, h); break;
+        case 6: DrawEditsTab(app, h); break;
+        case 7: DrawUpscaleTab(app, h); break;
+        case 8: DrawClefTab(app, h); break;
+        case 9: DrawPixelTab(app, h); break;
+        case 10: DrawVideoTab(app, h); break;
+        case 13: DrawLoraPage(app, h); break;
+        case 14: DrawThreeDTab(app, h); break;
+        case 15: DrawBinTab(app, h); break;
+        case 11: { // Sound: songs, or scenes with many voices
+            const float y0 = ImGui::GetCursorPosY();
+            for (int m = 0; m < 2; ++m) {
+                if (m) ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Button, g_soundMode == m ? ui::WithAlpha(ui::kAccent, 0.85f) : ImGui::GetColorU32(ImGuiCol_Button));
+                if (ImGui::Button(m ? "Drama (many voices)" : "Music")) g_soundMode = m;
+                ImGui::PopStyleColor();
+            }
+            const float sh = h - (ImGui::GetCursorPosY() - y0);
+            if (g_soundMode == 1) DrawDramaTab(app, sh);
+            else DrawMusicTab(app, sh);
+            break;
+        }
+        default: break;
+    }
+}
+
+// ---- Tiling (like Hyprland, since 2026-10-30): a page you open goes beside the one you are on - two pages side by side with a splitter
+// between them, the focused one outlined; a third page takes the place of the one used least lately. Ctrl+click in the sidebar (or
+// View > Tile pages side by side, off) opens a page on its own. The new tile slides in.
+struct TileState {
+    double used[2] = {0.0, 0.0}; // when each tile was last clicked in
+    float ratio = 0.5f;          // the left tile's share of the width
+    double openedAt = -10.0;     // (the slide-in)
+};
+TileState g_tiling;
+const char* const kPageNames[] = {"Gallery", "Vision library", "Workflows", "Vision board", "Generate", "Characters", "Edits", "Upscale", "Clef mode", "Pixel art", "Video", "Sound", "Sound", "LoRAs", "3D", "Recycle bin"};
+
+bool TilesAnimating() { return ImGui::GetTime() - g_tiling.openedAt < 0.3; }
+
+void OpenPage(AppState& app, int t, bool alone) {
+    if (t == 7) SetEditsMode(3), t = 6;   // (Upscale is a mode of Edits now)
+    if (t == 12) g_soundMode = 1, t = 11; // (Drama is a mode of Sound)
+    int* tl = app.tiles;
+    bool* pin = app.tilePinned;
+    if (tl[0] == t || tl[1] == t) {
+        // (already showing: it is just focused - and shown, if it was minimised)
+        app.tileMin[tl[0] == t ? 0 : 1] = false;
+    } else if (!app.tilePages || (alone && !pin[0] && !pin[1])) {
+        tl[0] = t, tl[1] = -1, pin[0] = pin[1] = false, app.tileMin[0] = app.tileMin[1] = false;
+    } else if (tl[1] < 0) {
+        tl[1] = t, pin[1] = false, app.tileMin[0] = app.tileMin[1] = false;
+        g_tiling.openedAt = ImGui::GetTime();
+    } else {
+        // in place of the one used least lately - never a pinned one
+        int k = g_tiling.used[0] <= g_tiling.used[1] ? 0 : 1;
+        if (pin[k]) k = 1 - k;
+        if (pin[k]) {
+            app.SetStatus(std::string("Both pages are pinned: unpin one to open ") + kPageNames[std::clamp(t, 0, 15)]);
+            return;
+        }
+        tl[k] = t, app.tileMin[k] = false;
+    }
+    app.activeTab = t;
+    g_tiling.used[tl[0] == t ? 0 : 1] = ImGui::GetTime();
+}
+
+void CloseTile(AppState& app, int k) {
+    int* tl = app.tiles;
+    if (tl[1] < 0) return;
+    if (k == 0) tl[0] = tl[1], g_tiling.used[0] = g_tiling.used[1], app.tilePinned[0] = app.tilePinned[1];
+    tl[1] = -1, app.tilePinned[1] = false, app.tileMin[0] = app.tileMin[1] = false;
+    app.activeTab = tl[0];
+}
+
+// Which pages were open where, as you went: Ctrl+Z steps back through it, Ctrl+Y forward again (2026-10-30). Only the arrangement counts: which pages, on which side,
+// pinned or folded - not how wide (dragging the splitter would fill the list).
+struct Layout {
+    int tiles[2] = {-1, -1};
+    bool pinned[2] = {false, false}, folded[2] = {false, false};
+    int active = 0;
+    bool Same(const Layout& o) const {
+        return tiles[0] == o.tiles[0] && tiles[1] == o.tiles[1] && pinned[0] == o.pinned[0] && pinned[1] == o.pinned[1] && folded[0] == o.folded[0] && folded[1] == o.folded[1];
+    }
+};
+std::vector<Layout> g_layoutsBack, g_layoutsNext;
+Layout g_layoutNow;
+bool g_layoutKnown = false;
+
+Layout CurrentLayout(const AppState& app) {
+    Layout l;
+    for (int k = 0; k < 2; ++k) l.tiles[k] = app.tiles[k], l.pinned[k] = app.tilePinned[k], l.folded[k] = app.tileMin[k];
+    l.active = app.activeTab;
+    return l;
+}
+
+void TrackLayout(const AppState& app) {
+    const Layout now = CurrentLayout(app);
+    if (g_layoutKnown && !now.Same(g_layoutNow)) {
+        g_layoutsBack.push_back(g_layoutNow);
+        if (g_layoutsBack.size() > 50) g_layoutsBack.erase(g_layoutsBack.begin());
+        g_layoutsNext.clear();
+    }
+    g_layoutNow = now;
+    g_layoutKnown = true;
+}
+
+void LayoutStep(AppState& app, bool back) {
+    std::vector<Layout>& from = back ? g_layoutsBack : g_layoutsNext;
+    std::vector<Layout>& to = back ? g_layoutsNext : g_layoutsBack;
+    if (from.empty()) {
+        app.SetStatus(back ? "No earlier layout" : "No later layout");
+        return;
+    }
+    to.push_back(CurrentLayout(app));
+    const Layout l = from.back();
+    from.pop_back();
+    for (int k = 0; k < 2; ++k) app.tiles[k] = l.tiles[k], app.tilePinned[k] = l.pinned[k], app.tileMin[k] = l.folded[k];
+    app.activeTab = l.active;
+    g_layoutNow = l;
+    std::string names = kPageNames[std::clamp(l.tiles[0], 0, 15)];
+    if (l.tiles[1] >= 0) names += std::string(" + ") + kPageNames[std::clamp(l.tiles[1], 0, 15)];
+    app.SetStatus("Layout: " + names + (back ? " (Ctrl+Y goes forward)" : ""));
+}
+
+void SwapTiles(AppState& app) {
+    std::swap(app.tiles[0], app.tiles[1]), std::swap(app.tilePinned[0], app.tilePinned[1]), std::swap(app.tileMin[0], app.tileMin[1]);
+    std::swap(g_tiling.used[0], g_tiling.used[1]), g_tiling.ratio = 1.0f - g_tiling.ratio;
+}
+
+// A page dragged from the side bar and let go over a side of the screen: it goes there (the page there leaves; one already on the other side swaps with it)
+void PlacePage(AppState& app, int t, int side) {
+    if (t == 7) SetEditsMode(3), t = 6;
+    if (t == 12) g_soundMode = 1, t = 11;
+    int* tl = app.tiles;
+    if (tl[1] < 0) {
+        if (tl[0] == t) return;
+        const int old = tl[0];
+        tl[side] = t, tl[1 - side] = old;
+        app.tilePinned[0] = app.tilePinned[1] = false, app.tileMin[0] = app.tileMin[1] = false;
+        g_tiling.openedAt = ImGui::GetTime();
+    } else if (tl[1 - side] == t) {
+        SwapTiles(app);
+    } else if (tl[side] != t) {
+        tl[side] = t, app.tilePinned[side] = false;
+    }
+    app.tileMin[side] = false;
+    app.activeTab = t;
+    g_tiling.used[side] = ImGui::GetTime();
+}
+
+// Pictures dropped anywhere on a page (dragged from the gallery, the Vision library or Explorer) go where that page takes pictures.
+// paths null: only what it would do with them, in a few words (nullptr: the page takes none).
+const char* PageTakesPictures(AppState& app, int tab, const std::vector<std::wstring>* paths) {
+    const bool go = paths && !paths->empty();
+    switch (tab) {
+        case 4: if (go) GenerateTakePictures(*paths, false); return "Add as people (their looks go into your words)";
+        case 5: if (go) OpenCharacterExtract(app, paths->front()); return "Find the characters in it";
+        case 8: if (go) AddToClefCast(app, *paths); return "Add to the Clef cast";
+        case 9: if (go) OpenPixelArt(app, *paths); return "Pixel art it";
+        case 10: return VideoTakePictures(go ? *paths : std::vector<std::wstring>{}) ? "The start picture (a second: the end)" : nullptr;
+        case 14: if (go) ThreeDTakePicture(paths->front()); return "Make this one 3D";
+        case 6:
+            switch (EditsMode()) {
+                case 8: if (go) GenerateTakePictures(*paths, true); return "Add to the pictures to use";
+                case 7: if (go) PaintFillTakePicture(app, paths->front()); return "Paint and fill this picture";
+                case 4: if (go) AppsTakePictures(*paths); return "Use it in the app";
+                case 3: if (go) OpenUpscaler(app, *paths); return "Upscale it";
+                case 2: if (go) OpenDesigner(app, *paths); return "Put text over it";
+                case 1: if (go) OpenLayoutStudio(app, paths->front()); return "Box edit it";
+                case 5: return nullptr;
+                default: if (go) OpenPictureEditor(app, *paths); return "Change it (say what to change)";
+            }
+        default: return nullptr;
+    }
+}
+
+// The pictures a drag carries: the gallery's (MV_IMAGES), the Vision library's or a board character's (MV_LIBITEM / MV_BOARDCHAR)
+static std::vector<std::wstring> PayloadPictures(AppState& app, const ImGuiPayload* pl) {
+    std::vector<std::wstring> out;
+    if (!pl) return out;
+    if (pl->IsDataType("MV_IMAGES")) {
+        const int* idx = static_cast<const int*>(pl->Data);
+        for (int k = 0; k < pl->DataSize / static_cast<int>(sizeof(int)); ++k)
+            if (idx[k] >= 0 && idx[k] < static_cast<int>(app.entries.size()) && !app.entries[idx[k]].metadata.isVideo) out.push_back(app.entries[idx[k]].path);
+    } else if (pl->IsDataType("MV_LIBITEM") || pl->IsDataType("MV_BOARDCHAR")) {
+        out.push_back(static_cast<const wchar_t*>(pl->Data));
+    }
+    return out;
+}
+
+// A drop zone over the whole page (the page's own, smaller drop zones win): the accent wash and what a drop does while over it
+static void DropWash(ImVec2 p0, ImVec2 p1, const char* what) {
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    dl->AddRectFilled(p0, p1, ui::WithAlpha(ui::kAccent, 0.10f), ui::Dp(8.0f));
+    dl->AddRect(p0, p1, ui::WithAlpha(ui::kAccent, 0.9f), ui::Dp(8.0f), 0, ui::Dp(2.0f));
+    const ImVec2 ts = ImGui::CalcTextSize(what), c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f), pad(ui::Dp(14.0f), ui::Dp(9.0f));
+    dl->AddRectFilled(ImVec2(c.x - ts.x * 0.5f - pad.x, c.y - ts.y * 0.5f - pad.y), ImVec2(c.x + ts.x * 0.5f + pad.x, c.y + ts.y * 0.5f + pad.y), ui::WithAlpha(ui::kAccent, 0.92f), ui::Dp(10.0f));
+    dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), IM_COL32_WHITE, what);
+}
+
+static void TileDropTarget(AppState& app, int k, ImVec2 p0, ImVec2 p1) {
+    const ImGuiPayload* drag = ImGui::GetDragDropPayload();
+    if (!drag) return;
+    if (drag->IsDataType("MV_NAVTAB")) { // a page from the side bar: one page on screen has two sides to choose from, two pages are each a side
+        const int page = *static_cast<const int*>(drag->Data);
+        auto zone = [&](ImVec2 a, ImVec2 b, int side, const char* what) {
+            if (!ImGui::BeginDragDropTargetCustom(ImRect(a, b), ImGui::GetID(side ? "##navright" : "##navleft"))) return;
+            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("MV_NAVTAB", ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+                DropWash(a, b, what);
+                if (pl->IsDelivery()) PlacePage(app, page, side);
+            }
+            ImGui::EndDragDropTarget();
+        };
+        const float mid = (p0.x + p1.x) * 0.5f;
+        if (app.tiles[1] < 0) {
+            zone(p0, ImVec2(mid, p1.y), 0, "Open on the left");
+            zone(ImVec2(mid, p0.y), p1, 1, "Open on the right");
+        } else {
+            zone(p0, p1, k, k ? "Open on the right" : "Open on the left");
+        }
+        return;
+    }
+    const int tab = app.tiles[k];
+    const bool tile = drag->IsDataType("MV_TILE");
+    const char* what = tile ? (*static_cast<const int*>(drag->Data) != k ? "Swap sides" : nullptr) : tab != 0 ? PageTakesPictures(app, tab, nullptr) : nullptr;
+    if (!what || !ImGui::BeginDragDropTargetCustom(ImRect(p0, p1), ImGui::GetID(k ? "##tiledrop1" : "##tiledrop0"))) return;
+    const ImGuiDragDropFlags fl = ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect;
+    const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(tile ? "MV_TILE" : drag->DataType, fl);
+    if (pl) {
+        DropWash(p0, p1, what);
+        if (pl->IsDelivery()) {
+            if (tile) SwapTiles(app);
+            else {
+                const std::vector<std::wstring> paths = PayloadPictures(app, pl);
+                if (!paths.empty()) {
+                    PageTakesPictures(app, tab, &paths);
+                    app.activeTab = tab;
+                    app.SetStatus(std::string(kPageNames[std::clamp(tab, 0, 15)]) + ": " + what);
+                }
+            }
+        }
+    }
+    ImGui::EndDragDropTarget();
+}
+
+// A page held by its empty space and dragged: over the other page it shows Swap sides, let go there and they swap
+int g_tileGrab = -1;
+bool g_tileGrabbing = false;
+
+void PumpTileGrab(AppState& app) {
+    if (g_tileGrab < 0) return;
+    const ImGuiContext& g = *ImGui::GetCurrentContext();
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool onControl = g.ActiveId != 0 && (!g.ActiveIdWindow || g.ActiveId != g.ActiveIdWindow->MoveId); // (a click that landed on something after all)
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        const ImVec4 r = g_tileRect[1 - g_tileGrab];
+        if (g_tileGrabbing && io.MousePos.x >= r.x && io.MousePos.x < r.z && io.MousePos.y >= r.y && io.MousePos.y < r.w) SwapTiles(app);
+        g_tileGrab = -1, g_tileGrabbing = false;
+        return;
+    }
+    if (!g_tileGrabbing && (onControl || g_chipsDragged || ImGui::GetDragDropPayload())) {
+        g_tileGrab = -1;
+        return;
+    }
+    if (!g_tileGrabbing && !ImGui::IsMouseDragging(ImGuiMouseButton_Left, ui::Dp(8.0f))) return;
+    g_tileGrabbing = true;
+    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const char* nm = kPageNames[std::clamp(app.tiles[g_tileGrab], 0, 15)];
+    const ImVec2 mp = io.MousePos, ts = ImGui::CalcTextSize(nm), pad(ui::Dp(12.0f), ui::Dp(7.0f)), at(mp.x + ui::Dp(12.0f), mp.y + ui::Dp(8.0f));
+    const ImVec4 r = g_tileRect[1 - g_tileGrab];
+    if (mp.x >= r.x && mp.x < r.z && mp.y >= r.y && mp.y < r.w) {
+        const ImVec2 p0(r.x, r.y), p1(r.z, r.w), c((r.x + r.z) * 0.5f, (r.y + r.w) * 0.5f), sz = ImGui::CalcTextSize("Swap sides");
+        dl->AddRectFilled(p0, p1, ui::WithAlpha(ui::kAccent, 0.10f), ui::Dp(8.0f));
+        dl->AddRect(p0, p1, ui::WithAlpha(ui::kAccent, 0.9f), ui::Dp(8.0f), 0, ui::Dp(2.0f));
+        dl->AddRectFilled(ImVec2(c.x - sz.x * 0.5f - ui::Dp(14.0f), c.y - sz.y * 0.5f - ui::Dp(9.0f)), ImVec2(c.x + sz.x * 0.5f + ui::Dp(14.0f), c.y + sz.y * 0.5f + ui::Dp(9.0f)),
+                          ui::WithAlpha(ui::kAccent, 0.92f), ui::Dp(10.0f));
+        dl->AddText(ImVec2(c.x - sz.x * 0.5f, c.y - sz.y * 0.5f), IM_COL32_WHITE, "Swap sides");
+    }
+    dl->AddRectFilled(at, ImVec2(at.x + ts.x + pad.x * 2, at.y + ts.y + pad.y * 2), ImGui::GetColorU32(ImGuiCol_PopupBg), ui::Dp(8.0f));
+    dl->AddText(ImVec2(at.x + pad.x, at.y + pad.y), ImGui::GetColorU32(ImGuiCol_Text), nm);
+}
+
+// A tile's slim bar: its name, then Pin, Minimise, Swap sides, Only this, Close (the bar's empty part is a handle: drag it onto the other side)
+float DrawTileBar(AppState& app, int k) {
+    const int tab = app.tiles[k];
+    const bool focused = app.activeTab == tab;
+    const float y0 = ImGui::GetCursorPosY();
+    { // the handle, under the name and the buttons (they stay clickable)
+        const ImVec2 b0 = ImGui::GetCursorScreenPos();
+        ImGui::SetNextItemAllowOverlap();
+        ImGui::InvisibleButton("##tilegrab", ImVec2(std::max(1.0f, ImGui::GetContentRegionAvail().x), ImGui::GetFrameHeight()));
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_DelayNormal)) ImGui::SetTooltip("Drag onto the other page to swap sides");
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip)) {
+            ImGui::SetDragDropPayload("MV_TILE", &k, sizeof(k));
+            ImGui::EndDragDropSource();
+        }
+        if (ImGui::IsItemActive() && ImGui::GetDragDropPayload()) { // (the page's name follows the mouse)
+            const char* nm = kPageNames[std::clamp(tab, 0, 15)];
+            const ImVec2 mp = ImGui::GetIO().MousePos, ts = ImGui::CalcTextSize(nm), pad(ui::Dp(12.0f), ui::Dp(7.0f));
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            dl->AddRectFilled(ImVec2(mp.x + ui::Dp(12.0f), mp.y + ui::Dp(8.0f)), ImVec2(mp.x + ui::Dp(12.0f) + ts.x + pad.x * 2, mp.y + ui::Dp(8.0f) + ts.y + pad.y * 2),
+                              ImGui::GetColorU32(ImGuiCol_PopupBg), ui::Dp(8.0f));
+            dl->AddText(ImVec2(mp.x + ui::Dp(12.0f) + pad.x, mp.y + ui::Dp(8.0f) + pad.y), ImGui::GetColorU32(ImGuiCol_Text), nm);
+        }
+        ImGui::SetCursorScreenPos(b0);
+    }
+    ImGui::AlignTextToFramePadding();
+    if (focused) ImGui::TextUnformatted(kPageNames[std::clamp(tab, 0, 15)]);
+    else ImGui::TextDisabled("%s", kPageNames[std::clamp(tab, 0, 15)]);
+    const bool pinned = app.tilePinned[k];
+    if (pinned) {
+        ImGui::SameLine();
+        ImGui::TextColored(ui::kAccent, "(pinned)");
+    }
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const char* pinLbl = pinned ? "Unpin" : "Pin";
+    const char* labels[] = {pinLbl, "Minimise", "Swap sides", "Only this", "Close"};
+    float bw = 0.0f;
+    for (const char* l : labels) bw += ImGui::CalcTextSize(l).x + st.FramePadding.x * 2.0f + st.ItemSpacing.x;
+    ImGui::SameLine(std::max(ImGui::GetCursorPosX() + st.ItemSpacing.x, ImGui::GetContentRegionMax().x - bw + st.ItemSpacing.x));
+    if (pinned) ImGui::PushStyleColor(ImGuiCol_Button, ui::ChipActiveColor());
+    if (ImGui::Button(pinLbl)) app.tilePinned[k] = !pinned;
+    if (pinned) ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Pinned: a page you open never takes this one's place");
+    ImGui::SameLine();
+    if (ImGui::Button("Minimise")) app.tileMin[k] = true, app.activeTab = app.tiles[1 - k];
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Fold it to a thin strip at the side: the other page gets the room (click the strip to bring it back)");
+    ImGui::SameLine();
+    if (ImGui::Button("Swap sides")) SwapTiles(app);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Or drag the bar onto the other page");
+    ImGui::SameLine();
+    if (ImGui::Button("Only this"))
+        app.tiles[0] = tab, app.tiles[1] = -1, app.activeTab = tab, app.tilePinned[0] = app.tilePinned[1] = false, app.tileMin[0] = app.tileMin[1] = false;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("This page on its own, the whole width");
+    ImGui::SameLine();
+    if (ImGui::Button("Close")) CloseTile(app, k);
+    return ImGui::GetCursorPosY() - y0;
+}
+
+void DrawTile(AppState& app, int k, float w, float h, bool split) {
+    const int tab = app.tiles[k];
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    char id[24];
+    snprintf(id, sizeof(id), "##tilepage%d", tab); // (named by its page: its scroll and state stay when it moves to the other side)
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, split ? ImVec2(ui::Dp(6.0f), ui::Dp(4.0f)) : ImVec2(0, 0));
+    ImGui::BeginChild(id, ImVec2(w, h), split ? ImGuiChildFlags_AlwaysUseWindowPadding : ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    float bodyH = ImGui::GetContentRegionAvail().y;
+    if (split) bodyH -= DrawTileBar(app, k);
+    if (app.tiles[k] == tab && !app.tileMin[k]) DrawPageBody(app, tab, std::max(ui::Dp(60.0f), bodyH)); // (not if its bar just closed it)
+    // held on empty space (no button, picture or box under it): it may be the start of moving the page to the other side, like its bar
+    if (split && app.tiles[k] == tab && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && !ImGui::IsAnyItemHovered() &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && !g_boxSelecting)
+        g_tileGrab = k, g_tileGrabbing = false;
+    g_boxSelecting = false;
+    // the page under the mouse is the focused one, as in a tiling window manager (no click needed) - not while dragging or in a menu
+    const ImGuiIO& io = ImGui::GetIO();
+    if (split && app.tiles[k] == tab && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f) &&
+        !ImGui::IsAnyMouseDown() && !ImGui::GetDragDropPayload() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
+        app.activeTab = tab;
+        g_tiling.used[k] = ImGui::GetTime();
+    }
+    ImGui::EndChild();
+    const ImVec2 p1(p0.x + w, p0.y + h);
+    g_tileRect[k] = ImVec4(p0.x, p0.y, p1.x, p1.y), g_tileTab[k] = tab;
+    if (app.tiles[k] == tab) {
+        TileDropTarget(app, k, p0, p1);
+        if (g_osDropTab == tab && !g_osDropPaths.empty()) { // (files from Explorer, dropped on this page)
+            const std::vector<std::wstring> paths = std::move(g_osDropPaths);
+            g_osDropPaths.clear(), g_osDropTab = -1;
+            if (const char* what = PageTakesPictures(app, tab, &paths)) app.activeTab = tab, app.SetStatus(std::string(kPageNames[std::clamp(tab, 0, 15)]) + ": " + what);
+        }
+    }
+    if (split) { // the focused one outlined in the accent colour, the other faintly
+        const bool focused = app.activeTab == tab;
+        ImGui::GetWindowDrawList()->AddRect(p0, ImVec2(p0.x + w, p0.y + h), focused ? ImGui::GetColorU32(ui::kAccent) : ImGui::GetColorU32(ImGuiCol_Border),
+                                            ui::Dp(8.0f), 0, focused ? ui::Dp(2.0f) : ui::Dp(1.0f));
+    }
+}
+
+// A minimised tile: a thin strip with its name down it; a click brings it back
+void DrawTileStrip(AppState& app, int k, float w, float h) {
+    const int tab = app.tiles[k];
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::PushID(k);
+    if (ImGui::InvisibleButton("##tilestrip", ImVec2(w, h))) app.tileMin[k] = false, app.activeTab = tab;
+    const bool hov = ImGui::IsItemHovered();
+    ImGui::PopID();
+    const char* name = kPageNames[std::clamp(tab, 0, 15)];
+    if (hov) ImGui::SetTooltip("%s - click to bring it back", name);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), hov ? IM_COL32(255, 255, 255, 26) : IM_COL32(255, 255, 255, 12), ui::Dp(8.0f));
+    float y = p.y + ui::Dp(12.0f);
+    for (const char* c = name; *c && y < p.y + h - ImGui::GetFontSize(); ++c) { // (its name, a letter under the other)
+        const char s[2] = {*c, 0};
+        const float cw = ImGui::CalcTextSize(s).x;
+        dl->AddText(ImVec2(p.x + (w - cw) * 0.5f, y), ImGui::GetColorU32(hov ? ImGuiCol_Text : ImGuiCol_TextDisabled), s);
+        y += ImGui::GetFontSize() * (*c == ' ' ? 0.6f : 0.95f);
+    }
+}
+
+// The page area: one page, or two side by side (one of them perhaps folded to a strip)
+void DrawTiles(AppState& app, float h) {
+    TrackLayout(app);
+    int* tl = app.tiles;
+    if (!app.TabShown(app.activeTab)) app.activeTab = tl[0];
+    const float W = ImGui::GetContentRegionAvail().x;
+    if (tl[1] < 0) {
+        DrawTile(app, 0, W, h, false);
+        return;
+    }
+    const float gap = ui::Dp(10.0f), strip = ui::Dp(30.0f);
+    if (app.tileMin[0] && app.tileMin[1]) app.tileMin[app.activeTab == tl[1] ? 1 : 0] = false; // (one stays open)
+    if (app.tileMin[0] || app.tileMin[1]) {
+        if (app.tileMin[0]) {
+            DrawTileStrip(app, 0, strip, h);
+            ImGui::SameLine(0, gap);
+            DrawTile(app, 1, W - strip - gap, h, true);
+        } else {
+            DrawTile(app, 0, W - strip - gap, h, true);
+            ImGui::SameLine(0, gap);
+            DrawTileStrip(app, 1, strip, h);
+        }
+        return;
+    }
+    // the new tile slides in from the right (an ease-out over a fifth of a second)
+    const float t = std::clamp(static_cast<float>((ImGui::GetTime() - g_tiling.openedAt) / 0.22), 0.0f, 1.0f);
+    const float e = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+    const float r = 1.0f + (g_tiling.ratio - 1.0f) * e;
+    const float w0 = std::floor((W - gap) * r), w1 = W - gap - w0;
+    DrawTile(app, 0, w0, h, true);
+    ImGui::SameLine(0, 0);
+    // the splitter: drag it to give one page more room
+    const ImVec2 s0 = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##tilesplit", ImVec2(gap, h));
+    const bool hov = ImGui::IsItemHovered(), act = ImGui::IsItemActive();
+    if (hov || act) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (act && W > gap) g_tiling.ratio = std::clamp((ImGui::GetIO().MousePos.x - (s0.x - w0) - gap * 0.5f) / (W - gap), 0.2f, 0.8f);
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) g_tiling.ratio = 0.5f; // (back to halves)
+    if (hov || act)
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(s0.x + gap * 0.5f - ui::Dp(1.5f), s0.y + h * 0.3f), ImVec2(s0.x + gap * 0.5f + ui::Dp(1.5f), s0.y + h * 0.7f),
+                                                  ImGui::GetColorU32(ui::kAccent), ui::Dp(2.0f));
+    ImGui::SameLine(0, 0);
+    if (tl[1] >= 0 && w1 > ui::Dp(80.0f)) DrawTile(app, 1, w1, h, true);
+    else ImGui::Dummy(ImVec2(std::max(1.0f, w1), h));
+    PumpTileGrab(app);
+}
+
+
 int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     MigrateAppData();     // it was AI Image Metadata Viewer: its data folder becomes Try2Create's (before anything reads it)
     InstallCrashLogger(); // a crash or a freeze leaves a report in %LOCALAPPDATA%\Try2Create\crash
@@ -6028,6 +6774,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     AppState app(g_pd3dDevice);
     g_app = &app;
     g_dpiScale = dpiScale;
+    ui::SetAccentIndex(app.accent);
     ui::Init(dpiScale * app.uiScaleMul, app.lightTheme);
     ApplyWindowTheme(hwnd, app.lightTheme);
     ImGui_ImplWin32_Init(hwnd);
@@ -6055,8 +6802,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         CrashHeartbeat();
         if (app.activeTab != lastTabNoted) {
             lastTabNoted = app.activeTab;
-            static const char* tabNames[] = {"Gallery", "Vision library", "Workflows", "Vision board", "Generate", "Characters", "Edits", "Upscale", "Clef mode", "Pixel art", "Video", "Music", "Drama", "LoRAs"};
-            CrashNote(std::string("tab: ") + tabNames[std::clamp(app.activeTab, 0, 13)]);
+            static const char* tabNames[] = {"Gallery", "Vision library", "Workflows", "Vision board", "Generate", "Characters", "Edits", "Upscale", "Clef mode", "Pixel art", "Video", "Music", "Drama", "LoRAs", "3D", "Recycle bin"};
+            CrashNote(std::string("tab: ") + tabNames[std::clamp(app.activeTab, 0, 15)]);
         }
         MSG msg;
         bool gotMessage = false;
@@ -6109,6 +6856,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                 }
             }
         }
+        ui::DrawPendingFoldButtons();
         ImGui::Render();
             const float* clear = g_clear;
             g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
@@ -6205,6 +6953,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         PumpVideo(app);
         PumpComfyResults(app);
         PumpStory(app);
+        PumpMusicVideo(app);
+        PumpLibrary(app);
         PumpMusic(app);
         PumpDrama(app);
         PumpCharacterCreator(app);
@@ -6215,13 +6965,13 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             app.PumpCleanExport();
         app.PumpRename();
         app.SaveRatingsIfDirty();
-        if (app.VideoOpen() && app.activeTab != 0 && !g_fullscreen) app.videoPlayer->Pause(); // another tab is showing
+        if (app.VideoOpen() && !app.TabShown(0) && !g_fullscreen) app.videoPlayer->Pause(); // another tab is showing
         const bool videoMoving = app.UpdateVideo();
 
         const bool busy = videoMoving || app.IsLoading() || app.IsNsfwJobRunning() || app.IsScraping() || app.IsSimilarScanning() || app.IsPeopleScanning() || app.IsCleanExporting() || app.IsRenaming() || io.WantTextInput ||
-                          (app.activeTab == 9 && PixelArtAnimating()) || ToastsShowing() || g_paletteOpen ||
-                          (g_makingShown && app.activeTab == 0 && GetForegroundWindow() == g_hwnd) || // the spinner moves only while you look (not behind a game)
-                          VideoPageAnimating(app) || (app.activeTab == 6 && EditsHomeAnimating()) || (app.activeTab == 11 && (MusicPlaying() || DramaPlaying())) || (app.activeTab == 5 && CharacterCreatorShown() && CharacterCreatorBusy()) ||
+                          (app.TabShown(9) && PixelArtAnimating()) || TilesAnimating() || (app.TabShown(14) && ThreeDAnimating()) || ToastsShowing() || g_paletteOpen ||
+                          (g_makingShown && app.TabShown(0) && GetForegroundWindow() == g_hwnd) || // the spinner moves only while you look (not behind a game)
+                          VideoPageAnimating(app) || (app.TabShown(6) && EditsHomeAnimating()) || (app.TabShown(11) && (MusicPlaying() || DramaPlaying())) || (app.TabShown(5) && CharacterCreatorShown() && CharacterCreatorBusy()) ||
                           (OrbitViewAnimating() && GetForegroundWindow() == g_hwnd); // a turning character (not behind a game)
         if (wasBusy && !busy) renderFrames = std::max(renderFrames, 3); // show the final state
         wasBusy = busy;
@@ -6237,6 +6987,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         if (g_uiRebuild) {
             g_uiRebuild = false;
             ImGui_ImplDX11_InvalidateDeviceObjects();
+            ui::SetAccentIndex(app.accent);
             ui::Init(g_dpiScale * app.uiScaleMul, app.lightTheme);
             ApplyWindowTheme(hwnd, app.lightTheme);
         }
@@ -6290,6 +7041,7 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, g_fullscreen ? ImVec2(0, 0) : ImVec2(ui::Dp(10.0f), ui::Dp(8.0f)));
         ImGui::Begin("##root", nullptr, rootFlags);
         ImGui::PopStyleVar(3);
+        if (!g_fullscreen) ui::DrawBackdrop(ImGui::GetWindowDrawList(), ImGui::GetWindowPos(), ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowWidth(), ImGui::GetWindowPos().y + ImGui::GetWindowHeight()));
 
         if (!g_fullscreen) {
             DrawMenuBar(app);
@@ -6315,85 +7067,11 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
         if (g_fullscreen) {
             DrawFullscreenViewer(app);
         } else {
-            if (app.requestTab >= 0 && app.requestTab <= 13) app.activeTab = app.requestTab;
-            app.requestTab = -1;
-            if (app.activeTab == 7) app.activeTab = 6, SetEditsMode(3); // (Upscale is a mode of Edits now)
-            if (app.activeTab == 12) app.activeTab = 11, g_soundMode = 1; // (Drama is a mode of Sound)
+            if (app.requestTab >= 0 && app.requestTab <= 15) OpenPage(app, app.requestTab, app.requestAlone);
+            app.requestTab = -1, app.requestAlone = false;
             DrawNavSidebar(app, bodyH);
             ImGui::SameLine(0, ui::Dp(8.0f));
-            ImGui::BeginChild("##page", ImVec2(0, bodyH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-            const float tabBodyH = ImGui::GetContentRegionAvail().y;
-            switch (app.activeTab) {
-                case 0:
-                    StarPickBar(app); // choosing who goes in a video (Star in a video): a floating bar over the gallery
-                    if (app.currentFolder.empty()) {
-                        DrawWelcome(app, tabBodyH);
-                    } else {
-                        // A resizable table gives free drag-to-resize splitters between the
-                        // gallery/viewer/metadata panes, so the gallery can be widened to see
-                        // more thumbnails per row when browsing a large folder.
-                        ImGuiTableFlags layoutFlags = ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings;
-                        const bool pane = app.showFolderPane;
-                        if (ImGui::BeginTable(pane ? "main_layout_f" : "main_layout", pane ? 4 : 3, layoutFlags, ImVec2(0, tabBodyH))) {
-                            if (pane) ImGui::TableSetupColumn("Folders", ImGuiTableColumnFlags_WidthStretch, 0.14f);
-                            ImGui::TableSetupColumn("Gallery", ImGuiTableColumnFlags_WidthStretch, 0.25f);
-                            ImGui::TableSetupColumn("Viewer", ImGuiTableColumnFlags_WidthStretch, 0.38f);
-                            ImGui::TableSetupColumn("Metadata", ImGuiTableColumnFlags_WidthStretch, 0.37f);
-                            ImGui::TableNextRow(0, tabBodyH);
-                            int col = 0;
-                            if (pane) {
-                                ImGui::TableSetColumnIndex(col++);
-                                DrawFolderPane(app, tabBodyH);
-                            }
-                            ImGui::TableSetColumnIndex(col++);
-                            ImGui::BeginChild("left_pane", ImVec2(0, tabBodyH), true);
-                            DrawThumbnailGrid(app);
-                            ImGui::EndChild();
-
-                            ImGui::TableSetColumnIndex(col++);
-                            ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::ViewerBackground());
-                            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(0.0f), 0));
-                            ImGui::BeginChild("center_pane", ImVec2(0, tabBodyH), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-                            ImGui::PopStyleVar();
-                            DrawImageViewer(app);
-                            ImGui::EndChild();
-                            ImGui::PopStyleColor();
-
-                            ImGui::TableSetColumnIndex(col++);
-                            ImGui::BeginChild("right_pane", ImVec2(0, tabBodyH), true);
-                            DrawMetadataPanel(app);
-                            ImGui::EndChild();
-                            ImGui::EndTable();
-                        }
-                    }
-                    break;
-                case 1: DrawVisionLibrary(app, tabBodyH); break;
-                case 2: DrawWorkflowTab(app, tabBodyH); break;
-                case 3: DrawBoardTab(app, tabBodyH); break;
-                case 4: DrawComfyTab(app, tabBodyH); break;
-                case 5: DrawCharactersTab(app, tabBodyH); break;
-                case 6: DrawEditsTab(app, tabBodyH); break;
-                case 7: DrawUpscaleTab(app, tabBodyH); break;
-                case 8: DrawClefTab(app, tabBodyH); break;
-                case 9: DrawPixelTab(app, tabBodyH); break;
-                case 10: DrawVideoTab(app, tabBodyH); break;
-                case 13: DrawLoraPage(app, tabBodyH); break;
-                case 11: { // Sound: songs, or scenes with many voices
-                    const float y0 = ImGui::GetCursorPosY();
-                    for (int m = 0; m < 2; ++m) {
-                        if (m) ImGui::SameLine();
-                        ImGui::PushStyleColor(ImGuiCol_Button, g_soundMode == m ? ui::WithAlpha(ui::kAccent, 0.85f) : ImGui::GetColorU32(ImGuiCol_Button));
-                        if (ImGui::Button(m ? "Drama (many voices)" : "Music")) g_soundMode = m;
-                        ImGui::PopStyleColor();
-                    }
-                    const float h = tabBodyH - (ImGui::GetCursorPosY() - y0);
-                    if (g_soundMode == 1) DrawDramaTab(app, h);
-                    else DrawMusicTab(app, h);
-                    break;
-                }
-                default: app.activeTab = 0; break;
-            }
-            ImGui::EndChild();
+            DrawTiles(app, bodyH);
         }
 
         if (!g_fullscreen) DrawStatusBar(app);
@@ -6432,6 +7110,8 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
                 if (tabTest >= 0 && !tabDone) {
                     tabDone = true;
                     app.requestTab = tabTest;
+                    app.requestAlone = UiTestNumber("split") < 0; // (MV_UI_TEST "split:N": page N goes beside it)
+                    if (UiTestNumber("split") >= 0) app.tiles[0] = UiTestNumber("split"), app.tiles[1] = -1;
                 }
                 // MV_UI_TEST "resultstab": the ComfyUI tab once something ComfyUI made is in (its viewer)
                 static const bool resTest = UiTestNumber("resultstab") >= 0;
@@ -6488,8 +7168,10 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
             DrawLoraBrowser(app);
             DrawCommandPalette(app);
         }
+        DrawLibraryPicker(app); // Poses & outfits (library_ui.cpp): a window over any page when one asked for it
         DrawToasts(app);
 
+        ui::DrawPendingFoldButtons();
         ImGui::Render();
         const float* clearColor = g_clear;
         g_pd3dDeviceContext->OMSetRenderTargets(1, &g_mainRenderTargetView, nullptr);
@@ -6512,7 +7194,9 @@ int APIENTRY wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     }
 
     app.SaveUiSettings();
+    BinFlush(); // (what waited in the Recycle bin page goes to the Windows Recycle Bin)
 
+    splat::Release();
     ImGui_ImplDX11_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();

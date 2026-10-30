@@ -29,24 +29,13 @@ std::wstring Wide(const std::string& s) {
     return w;
 }
 
-// tools\photocraft (any version folder) next to this program
+// tools\photocraft (any version folder), looked for until it is there (the setup can download it while the app runs)
 std::wstring Cli() {
     static std::wstring found;
-    static bool looked = false;
+    static ULONGLONG lookedAt = 0;
     static std::mutex m;
     std::lock_guard<std::mutex> lock(m);
-    if (looked) return found;
-    looked = true;
-    wchar_t buf[MAX_PATH * 2] = {};
-    GetModuleFileNameW(nullptr, buf, MAX_PATH * 2);
-    const fs::path root = fs::path(buf).parent_path() / L"tools" / L"photocraft";
-    std::error_code ec;
-    for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; it != end && !ec; it.increment(ec)) {
-        if (it->is_regular_file(ec) && _wcsicmp(it->path().filename().c_str(), L"photocraft-cli.exe") == 0) {
-            found = it->path().wstring();
-            break;
-        }
-    }
+    if (found.empty() && (!lookedAt || GetTickCount64() - lookedAt > 3000)) lookedAt = GetTickCount64(), found = FindPhotocraft(L"photocraft-cli.exe");
     return found;
 }
 
@@ -314,7 +303,7 @@ std::string SquarePicture(const std::wstring& picture, const std::wstring& outPn
 }
 
 std::string RenderCoverTemplate(int index, const std::wstring& picture, const std::string& title, const std::string& line2, const std::wstring& outPng, int size) {
-    if (Cli().empty()) return "PhotoCraft (tools\\photocraft) is not there";
+    if (Cli().empty()) return "PhotoCraft is not set up yet (Help > Set up Try2Create, Helpers)";
     index = std::clamp(index, 0, CoverTemplateCount() - 1);
     std::error_code ec;
     fs::create_directories(fs::path(outPng).parent_path(), ec);

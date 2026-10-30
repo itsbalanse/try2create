@@ -23,6 +23,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $commit = '66c4fb9cd3c0151e1e2ccd207847cb8335e87ab4'
 $comfy = Join-Path $Install 'ComfyUI'
+if (Test-Path (Join-Path $Install 'main.py')) { $comfy = $Install } # (a git clone: main.py in the folder itself)
 if (-not $Nodes) { $Nodes = Join-Path $comfy 'custom_nodes' }
 $hf = 'https://huggingface.co/PedroMarinhoDev'
 $sizes = @{

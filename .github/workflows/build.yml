@@ -30,6 +30,7 @@ jobs:
           Copy-Item README.md, LICENSE, THIRD_PARTY_NOTICES.txt $out
           Copy-Item models/*.json, models/*.txt "$out/models"
           Copy-Item tools/* "$out/tools" -Recurse
+          Copy-Item fonts "$out/fonts" -Recurse
           Compress-Archive -Path "$out/*" -DestinationPath dist/Try2Create.zip -Force
       - uses: actions/upload-artifact@v4
         with:

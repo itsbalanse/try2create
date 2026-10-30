@@ -13,6 +13,8 @@
 #include "imgui.h"
 #include "imgui_internal.h" // RenderTextEllipsis
 #include "ui_extra.h"
+#include "library_ui.h"
+#include "notify.h"
 #include "ui_theme.h"
 #include "vision_prompt.h"
 #include "win_dialogs.h"
@@ -434,9 +436,16 @@ void DrawCharactersTab(AppState& app, float height) {
         };
         if (tab("Your characters", !creating)) ShowCharacterCreator(false);
         ImGui::SameLine(0.0f, ui::Dp(4.0f));
-        if (tab("Create a character", creating)) ShowCharacterCreator(true);
+        if (tab("Create a character", creating && CharacterCreatorMode() != 2)) {
+            if (CharacterCreatorMode() == 2) SetCharacterCreatorMode(0);
+            ShowCharacterCreator(true);
+        }
+        ImGui::SameLine(0.0f, ui::Dp(4.0f));
+        if (tab("Extract from a picture", creating && CharacterCreatorMode() == 2)) ShowCharacterCreator(true), SetCharacterCreatorMode(2);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Every person or creature in a picture becomes one of your characters: from the gallery, a file, or pasted (or drag a picture onto this page)");
         ImGui::SameLine();
-        ImGui::TextDisabled(creating ? "Build someone from looks or your photo: they become one of your characters everywhere."
+        ImGui::TextDisabled(creating && CharacterCreatorMode() == 2 ? "Every person or creature in a picture becomes one of your characters, drawn alone in a studio."
+                            : creating ? "Build someone from looks or your photo: they become one of your characters everywhere."
                                      : "Your characters are used on the Vision board, in Clef mode, in edits and on the Video page.");
         height -= ImGui::GetFrameHeightWithSpacing();
         if (CharacterCreatorShown()) {
@@ -444,15 +453,26 @@ void DrawCharactersTab(AppState& app, float height) {
             return;
         }
     }
-    if (!ImGui::BeginTable("chars_layout", 3, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings, ImVec2(0, height))) return;
-    ImGui::TableSetupColumn("Saved", ImGuiTableColumnFlags_WidthStretch, 0.22f);
+    // the side columns fold to strips (the round "-" in their corner)
+    static bool foldList = false, foldFun = false;
+    const float strip = ui::Dp(28.0f);
+    char layoutId[32];
+    snprintf(layoutId, sizeof(layoutId), "chars_layout%d%d", foldList, foldFun);
+    if (!ImGui::BeginTable(layoutId, 3, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings, ImVec2(0, height))) return;
+    if (foldList) ImGui::TableSetupColumn("Saved", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, strip);
+    else ImGui::TableSetupColumn("Saved", ImGuiTableColumnFlags_WidthStretch, 0.22f);
     ImGui::TableSetupColumn("Character", ImGuiTableColumnFlags_WidthStretch, 0.33f);
-    ImGui::TableSetupColumn("Swap", ImGuiTableColumnFlags_WidthStretch, 0.45f);
+    if (foldFun) ImGui::TableSetupColumn("Swap", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, strip);
+    else ImGui::TableSetupColumn("Swap", ImGuiTableColumnFlags_WidthStretch, 0.45f);
     ImGui::TableNextRow(0, height);
 
     // ---- saved characters
     ImGui::TableSetColumnIndex(0);
+    if (foldList) {
+        if (ui::FoldStrip("##stripsaved", "Saved characters", strip, height)) foldList = false;
+    } else {
     ImGui::BeginChild("chars_list", ImVec2(0, height), true);
+    if (ui::FoldButton("##foldsaved", "Fold the list away")) foldList = true;
     ImGui::TextUnformatted("Saved characters");
     ImGui::SameLine();
     DrawClearCharacters("list");
@@ -613,6 +633,8 @@ void DrawCharactersTab(AppState& app, float height) {
     if (AcceptLibraryDrop(dropped)) AddSavedCharacter(app, dropped);
     ImGui::EndChild();
 
+    } // (the list)
+
     // ---- the selected character
     ImGui::TableSetColumnIndex(1);
     ImGui::BeginChild("chars_detail", ImVec2(0, height), true);
@@ -685,12 +707,75 @@ void DrawCharactersTab(AppState& app, float height) {
                 }
                 ImGui::EndDisabled();
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("H3 moves the camera once around them, frozen in place (about a minute on an RTX 3090); then drag the picture "
+                    ImGui::SetTooltip("H3 moves the camera once around them, frozen in place (about a minute on a 24 GB card); then drag the picture "
                                       "to turn them and look at their back and sides. Works best on a full-body picture on a plain backdrop.");
             }
             if (haveOrbit) {
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Open the video")) ShellExecuteW(nullptr, L"open", cur->orbit.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            }
+        }
+        // poses & outfits (library_ui.cpp): a new picture of them in one, which goes straight on into a video or a swap
+        {
+            struct LibResult {
+                std::string key;             // the character it was made from
+                std::wstring made;
+                std::string what, why;
+                bool busy = false;
+            };
+            static LibResult res;
+            const std::wstring person = cur->image;
+            const std::string key = cur->key;
+            auto start = [&](int kind) {
+                OpenLibraryPicker(app, kind, kind == 0 ? "Put " + CharName(*cur) + " in a pose" : "Dress " + CharName(*cur) + " in an outfit",
+                                  [person, key](AppState& a, const LibItem& it) {
+                                      res = LibResult{key, std::wstring(), (it.kind == 0 ? "in pose " : "in outfit ") + it.id, std::string(), true};
+                                      LibraryEdit(a, person, it, [key](AppState& a2, const std::wstring& made, const std::string& why) {
+                                          if (res.key != key) return;
+                                          res.made = made, res.why = why, res.busy = false;
+                                          if (!made.empty()) Toast(ToastKind::Success, "A new picture of them", res.what, made, [](AppState& s) { s.requestTab = 5; }, "libedit");
+                                          (void)a2;
+                                      });
+                                  });
+            };
+            ImGui::BeginDisabled(res.busy || !(LibraryHas(0) || LibraryHas(1)));
+            if (ImGui::SmallButton("Put them in a pose...")) start(0);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip(LibraryHas(0) ? "Pick a pose (a drawn mannequin): the writer puts it into words and FLUX 3 makes a new full-body picture of them in it"
+                                                : "Needs your copy of the pose gallery in the Poses & outfits folder (the picker's top line)");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Dress them in an outfit...")) start(1);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip(LibraryHas(1) ? "Pick an outfit: FLUX 3 makes a new full-body picture of them wearing it (its picture and its keywords)"
+                                                : "Needs your copy of the outfit gallery in the Poses & outfits folder");
+            ImGui::EndDisabled();
+            if (!LibraryHas(0) && !LibraryHas(1)) {
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Set the folder...")) OpenLibraryPicker(app, 0, "Poses & outfits", nullptr);
+            }
+            if (res.key == key && (res.busy || !res.made.empty() || !res.why.empty())) {
+                if (res.busy) {
+                    ImGui::TextColored(ui::kAccentHover, "Making them %s... (the writer, then FLUX 3)", res.what.c_str());
+                } else if (!res.made.empty()) {
+                    const AppState::LibThumb lt = app.LibraryThumb(res.made);
+                    const float th = ui::Dp(120.0f);
+                    if (lt.srv && lt.h > 0) {
+                        ImGui::Image((ImTextureID)(intptr_t)lt.srv, ImVec2(th * lt.w / lt.h, th));
+                        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) app.OpenFile(res.made);
+                        ImGui::SameLine();
+                    }
+                    ImGui::BeginGroup();
+                    ImGui::TextDisabled("Them %s:", res.what.c_str());
+                    if (ImGui::SmallButton("Animate it")) OpenVideoPage(app, res.made, std::string());
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("The Video page with this picture as the first frame");
+                    if (ImGui::SmallButton("Star in a video")) StarInVideo(app, res.made);
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Video > Star in a video with this picture as the one who goes in (a full-body picture swaps legs too)");
+                    if (ImGui::SmallButton("Save as a new character")) AddSavedCharacter(app, res.made);
+                    if (ImGui::SmallButton("Close##libres")) res = LibResult{};
+                    ImGui::EndGroup();
+                } else {
+                    ImGui::TextColored(ui::kWarn, "Could not make it: %s", res.why.c_str());
+                }
             }
         }
         ImGui::AlignTextToFramePadding();
@@ -798,7 +883,13 @@ void DrawCharactersTab(AppState& app, float height) {
 
     // ---- swap
     ImGui::TableSetColumnIndex(2);
+    if (foldFun) {
+        if (ui::FoldStrip("##stripfun", "Fun with characters", strip, height)) foldFun = false;
+        ImGui::EndTable();
+        return;
+    }
     ImGui::BeginChild("chars_swap", ImVec2(0, height), true);
+    if (ui::FoldButton("##foldfun", "Fold this column away")) foldFun = true;
     ImGui::PushFont(ui::BoldFont());
     ImGui::TextUnformatted("Fun with characters");
     ImGui::PopFont();

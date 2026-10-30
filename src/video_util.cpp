@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <set>
@@ -23,6 +24,7 @@
 #pragma comment(lib, "propsys.lib")
 
 using json = nlohmann::ordered_json;
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -583,6 +585,21 @@ std::vector<RawField> ReadVideoWorkflowFields(const std::wstring& path) {
 }
 
 std::wstring FfmpegPath() { return FindFfmpeg(); }
+
+std::wstring FindPhotocraft(const wchar_t* name) {
+    wchar_t buf[MAX_PATH * 2];
+    std::vector<fs::path> roots;
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH * 2);
+    if (n > 0 && n < MAX_PATH * 2) roots.push_back(fs::path(std::wstring(buf, n)) / L"Try2Create" / L"tools" / L"photocraft");
+    n = GetModuleFileNameW(nullptr, buf, MAX_PATH * 2);
+    if (n > 0 && n < MAX_PATH * 2) roots.push_back(fs::path(std::wstring(buf, n)).parent_path() / L"tools" / L"photocraft");
+    for (const fs::path& root : roots) {
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; it != end && !ec; it.increment(ec))
+            if (it->is_regular_file(ec) && _wcsicmp(it->path().filename().c_str(), name) == 0) return it->path().wstring();
+    }
+    return {};
+}
 VideoInfo ProbeVideoFfmpeg(const std::wstring& path) { return FfmpegProbe(path); }
 bool RunCaptureHidden(const std::wstring& cmdline, std::string& out, bool mergeStderr) { return RunCapture(cmdline, out, mergeStderr); }
 bool RunCaptureIdle(const std::wstring& cmdline, std::string& out, bool mergeStderr) { return RunCaptureFlags(cmdline, out, mergeStderr, IDLE_PRIORITY_CLASS); }

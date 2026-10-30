@@ -278,7 +278,7 @@ struct PendingChar {
     bool autoName = false; // the app made the name up from the looks: the writer gives them a real one
 };
 
-// ---- Who draws a character. Compared on 2026-10-16 (the same six prompts, seeds and 880 x 1184, RTX 3090): Krea 2 Turbo draws people
+// ---- Who draws a character. Compared on 2026-10-16 (the same six prompts, seeds and 880 x 1184, 24 GB card): Krea 2 Turbo draws people
 // clearly more like photographs (sharp faces: scars, skin, stubble) and faster (7.9 s against 12.7 s); Qwen Image 2.1 follows the words
 // more literally and draws creatures and caricatures far better (a frog-man's head grows out of the body - Krea's looked like a rubber
 // mask - and "absurdly long thin legs" really are). So: Krea for people, Qwen for creatures and extreme looks, unless you pick one.
@@ -395,7 +395,7 @@ bool SheetPending(const std::wstring& image) {
 // the workflow's), the reference at about 2.4 MP and seen by the encoder at 1536, a 2272 x 1504 canvas (3:2, 3.4 MP: the workflow's "balanced")
 void MakeCharacterSheet(AppState& app, const std::wstring& image) {
     if (image.empty() || SheetPending(image)) return;
-    std::string unet = app.comfy.editUnet.empty() ? std::string("qwen_image_2.1_turbo_Q8_0.gguf") : app.comfy.editUnet;
+    std::string unet = app.comfy.editUnet.empty() ? std::string("qwen_image_2.1_turbo_int8_convrot.safetensors") : app.comfy.editUnet;
     std::string low = unet;
     for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     const bool gguf = low.size() > 5 && low.compare(low.size() - 5, 5, ".gguf") == 0, turbo = low.find("turbo") != std::string::npos;
@@ -1253,6 +1253,7 @@ void OpenCharacterCreator(AppState& app) {
 bool CharacterCreatorShown() { return g_showCreator; }
 void ShowCharacterCreator(bool on) { g_showCreator = on; }
 void SetCharacterCreatorMode(int mode) { g_crMode = std::clamp(mode, 0, 2); }
+int CharacterCreatorMode() { return g_crMode; }
 
 void DrawCharacterCreator(AppState& app, float height) {
     PumpLookWrites(app);

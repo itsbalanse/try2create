@@ -105,6 +105,7 @@ struct PendingCover {
     std::shared_future<std::wstring> coverFile; // or made here (a template, the picture squared): its file, "" = it failed
     std::string title, lyrics;     // for the song's file: its title and the lyrics (timed to the singing there)
     std::string caption;           // what was sent (the same song is not sent twice while it is being made)
+    bool forVideo = false;         // for Make a music video: the file goes to that page when it is done
     std::wstring cover;
     bool coverDone = false;
 };
@@ -115,6 +116,7 @@ struct Music {
     std::vector<std::wstring> photos; // pictures the song is about (the writer looks at them; the cover is made from them)
     std::string photoContext;     // what they show, in words (their prompts, a Vision board): for a writer that cannot see, and as more to go on
     std::string title;            // the song's title (written with it)
+    bool forVideo = false;        // the next Make is for Make a music video
     std::string cover;            // what the cover picture shows (written with it)
     int coverMode = kCoverDesign; // the cover every song gets, put into the song's file
     int coverTemplate = 0;        // the design (cover_templates)
@@ -291,13 +293,25 @@ const char* const kMusicSystem =
     "<the lyrics, with section tags on their own lines: [intro] [verse] [pre-chorus] [chorus] [bridge] [instrumental] [drop] [outro]>\n"
     "Rules: be specific (instruments, tempo, texture). The tags are what shapes the song: it lasts about {SECONDS} seconds, so use about "
     "{SECTIONS} sections and at most {LINES} sung lines in all (the song stops at its length, even mid-verse). Every word in LYRICS is sung: never write stage directions or descriptions there "
-    "(no \"guitar solo here\", no \"instrumental swell\"); a part without singing is just the [instrumental] tag on its own. {VOCALS}\n"
+    "(no \"guitar solo here\", no \"instrumental swell\"); a part without singing is just the [instrumental] tag on its own. A tag is only the section's name, never a description of it: that goes in Vocal Details and Arrangement. {VOCALS}\n"
     "Before CAPTION, one line \"TITLE: <a short song title>\". After LYRICS, one paragraph \"COVER: <the cover art of this single: what it "
     "shows (the people and the place from the pictures, if any, in a real place or a designed background - never a plain studio backdrop), "
     "the style (photo, painting, graphic design...), the colours and the mood>\".";
 
 // Every word in the lyrics is sung, but small writers still put the arrangement in them ("Soft kick and brush snare, electric piano shimmer"):
 // a line about instruments with nobody in it is taken out (a section left empty keeps its tag, which means "no singing")
+// A section tag is only the section's name: the rest of "[chorus - male and female together]" came out sung
+std::string PlainTag(const std::string& tag) {
+    std::string low = tag;
+    for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (const char* k : {"pre-chorus", "post-chorus", "chorus", "bridge", "intro", "outro", "instrumental", "solo", "drop", "hook"})
+        if (low.find(k) != std::string::npos) return std::string("[") + k + "]";
+    if (low.find("female") != std::string::npos) return "[female vocal]"; // (a duet's verses: music_video.cpp SongIdea)
+    if (low.find("male") != std::string::npos) return "[male vocal]";
+    if (low.find("verse") != std::string::npos) return "[verse]";
+    return tag;
+}
+
 std::string CleanLyrics(const std::string& lyrics) {
     static const char* kSound[] = {"piano", "guitar", "drum", "snare", "kick", "hi-hat", "synth", "bass", "strings", "cello", "violin", "brass", "beat",
                                    "shimmer", "swell", "solo", "instrumental", "fade", "riff", "melody", "chords", "808", "rhodes", "pad", "percussion"};
@@ -319,7 +333,7 @@ std::string CleanLyrics(const std::string& lyrics) {
             const bool people = std::any_of(std::begin(kPeople), std::end(kPeople), [&](const char* k) { return low.find(k) != std::string::npos; });
             drop = sound && !people;
         }
-        if (!drop) out += (out.empty() ? "" : "\n") + line;
+        if (!drop) out += (out.empty() ? "" : "\n") + (t.size() > 2 && t.front() == '[' && t.back() == ']' ? PlainTag(t) : line);
         if (b >= lyrics.size()) break;
     }
     return out;
@@ -485,8 +499,10 @@ void Make(AppState& app) {
     job.apiWorkflow = Workflow();
     job.label = SongLabel();
     job.prompt = g_m.caption;
-    job.times = g_m.times;
+    job.times = g_m.forVideo ? 1 : g_m.times;
     PendingCover pc;
+    pc.forVideo = g_m.forVideo;
+    g_m.forVideo = false;
     pc.title = g_m.title;
     pc.lyrics = g_m.lyrics;
     pc.caption = g_m.caption;
@@ -596,6 +612,51 @@ std::atomic<int> g_lyricsBusy{0};
 std::vector<std::pair<std::string, std::string>> g_lyricsDone; // shown in the list
 
 // songs and their covers coming back: once both are there, the cover goes into each take of the song
+// A song's file named after the song, with its lyrics files ("Try2Create_music_00001" said nothing, on the page or in a folder). The new path ("" = it stays).
+std::wstring NameSongFile(const std::wstring& song, const std::string& title) {
+    std::wstring name = Wide(title);
+    for (wchar_t& c : name)
+        if (c < 32 || wcschr(L"<>:\"/\\|?*", c)) c = L' ';
+    while (!name.empty() && (name.back() == L' ' || name.back() == L'.')) name.pop_back();
+    while (!name.empty() && name.front() == L' ') name.erase(name.begin());
+    if (name.size() > 80) name.resize(80);
+    if (name.empty()) return {};
+    const fs::path from(song);
+    std::error_code ec;
+    fs::path to = from.parent_path() / (name + from.extension().wstring());
+    if (_wcsicmp(to.c_str(), from.c_str()) == 0) return {};
+    for (int k = 2; fs::exists(to, ec) && k < 1000; ++k) to = from.parent_path() / (name + L" " + std::to_wstring(k) + from.extension().wstring());
+    for (int i = 0; i < 20; ++i) { // (a player letting go of it)
+        ec.clear();
+        fs::rename(from, to, ec);
+        if (!ec) break;
+        Sleep(150);
+    }
+    if (ec) return {};
+    fs::rename(SrtPathOf(song), SrtPathOf(to.wstring()), ec);
+    fs::path lrc = from, newLrc = to;
+    fs::rename(lrc.replace_extension(L".lrc"), newLrc.replace_extension(L".lrc"), ec);
+    return to.wstring();
+}
+
+std::vector<std::pair<std::wstring, std::wstring>> g_songsNamed; // (with g_lyricsMutex) done in the background, song -> its file now
+
+// the app's own records of a song follow its file
+void SongRenamed(const std::wstring from, const std::wstring to) { // (copies: from can be a song of the list, changed below)
+    const std::string was = Utf8(fs::path(from).filename().wstring()), now = Utf8(fs::path(to).filename().wstring());
+    for (auto& c : g_m.covers)
+        if (c.first == was) c.first = now;
+    for (Song& song : g_m.songs)
+        if (song.path == from) song.path = to, song.name = now, song.title.clear(); // (the list shows it at once)
+    ComfyMoveGenerationTime(from, to);
+    MusicVideoSongMoved(from, to);
+}
+
+std::mutex g_forVideoMutex;
+std::wstring g_forVideoSong;  // done
+std::string g_forVideoFailed; // why not
+std::atomic<int> g_forVideoBusy{0}; // its cover and lyrics are going into the file
+
 void PumpCovers(AppState& app) {
     if (g_m.pending.empty() || !app.comfySvc) return;
     const std::vector<ComfyActivity> acts = app.comfySvc->Activity();
@@ -628,6 +689,10 @@ void PumpCovers(AppState& app) {
         const bool songOver = !s || s->state == ComfyState::Done || s->state == ComfyState::Failed;
         if (songOver && !(s && s->state == ComfyState::Done)) { // the song failed or was stopped: its cover is not wanted either
             if (c && !pc.coverDone && c->state != ComfyState::Done && c->state != ComfyState::Failed) app.comfySvc->Cancel(pc.coverAct);
+            if (pc.forVideo) {
+                std::lock_guard<std::mutex> lock(g_forVideoMutex);
+                g_forVideoFailed = s && !s->message.empty() ? s->message : "the song was not made";
+            }
             g_m.pending.erase(g_m.pending.begin() + i);
             continue;
         }
@@ -647,15 +712,28 @@ void PumpCovers(AppState& app) {
             const std::wstring cover = pc.cover;
             const std::string title = pc.title, lyrics = pc.lyrics;
             ++g_lyricsBusy;
+            const bool forVideo = pc.forVideo;
+            if (forVideo) ++g_forVideoBusy;
             for (const std::wstring& song : songs) SetSongBusy(song, true);
-            std::thread([songs, cover, title, lyrics]() {
+            std::thread([songs, cover, title, lyrics, forVideo]() {
                 Sleep(300); // the player lets go of it first (if it was opened already)
+                std::wstring kept; // the first take, by its new name
                 for (const std::wstring& song : songs) {
                     if (!cover.empty()) EmbedCover(song, cover, title);
                     const std::string note = lyrics.empty() ? std::string() : AddLyricsToSong(song, lyrics, title);
+                    std::wstring named = title.empty() ? std::wstring() : NameSongFile(song, title);
+                    if (named.empty()) named = song;
+                    if (kept.empty()) kept = named;
                     SetSongBusy(song, false);
                     std::lock_guard<std::mutex> lock(g_lyricsMutex);
-                    g_lyricsNotes.push_back({Utf8(fs::path(song).filename().wstring()), note});
+                    g_songsNamed.push_back({song, named});
+                    g_lyricsNotes.push_back({Utf8(fs::path(named).filename().wstring()), note});
+                }
+                if (forVideo) {
+                    std::lock_guard<std::mutex> lock(g_forVideoMutex);
+                    if (!kept.empty()) g_forVideoSong = kept;
+                    else g_forVideoFailed = "the song came back without a file";
+                    --g_forVideoBusy;
                 }
                 --g_lyricsBusy;
             }).detach();
@@ -904,8 +982,8 @@ std::string Ellipsize(const std::string& s, float maxW) {
 }
 
 std::string SongTitle(const Song& s) {
-    if (!s.title.empty()) return s.title;
     std::string n = Utf8(fs::path(s.path).stem().wstring());
+    if (!s.title.empty() && n.rfind("Try2Create_music", 0) == 0) return s.title; // (a song still under ComfyUI's name; else the file's name is the song's, and Rename changes it)
     std::replace(n.begin(), n.end(), '_', ' ');
     return n;
 }
@@ -1041,6 +1119,29 @@ void PostVideo(AppState& app, const Song& s, const std::wstring& cover) {
 void SongMenu(AppState& app, const Song& s, bool isCurrent, VideoPlayer* vp) {
     const std::wstring cover = CoverOf(s.name);
     std::error_code ec;
+    { // its name: the title shown, and the file's own name with it
+        static char name[128] = "";
+        static std::wstring nameFor;
+        if (nameFor != s.path) nameFor = s.path, snprintf(name, sizeof(name), "%s", SongTitle(s).c_str());
+        ImGui::SetNextItemWidth(ui::Dp(200.0f));
+        ImGui::InputTextWithHint("##songname", "the song's name", name, sizeof(name));
+        ImGui::SameLine();
+        ImGui::BeginDisabled(SongBusy(s.path));
+        if (ImGui::SmallButton("Rename")) {
+            if (isCurrent && g_m.player) g_m.player->Close(); // (it lets go of the file)
+            const std::wstring now = NameSongFile(s.path, name);
+            if (!now.empty()) {
+                SongRenamed(s.path, now);
+                g_m.selected = now;
+                g_m.scanned = -100.0;
+                Save();
+                nameFor.clear();
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::Separator();
+    }
     if (ImGui::MenuItem(isCurrent && vp && vp->Playing() ? "Pause" : "Play", nullptr, false, !SongBusy(s.path))) {
         if (isCurrent && vp) vp->Toggle();
         else Play(app, s.path);
@@ -1051,6 +1152,8 @@ void SongMenu(AppState& app, const Song& s, bool isCurrent, VideoPlayer* vp) {
         Toast(ToastKind::Success, "The story's music", SongTitle(s) + " goes under the story when its clips are joined", {}, [](AppState& st) { st.requestTab = 10; }, "music");
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("The soundtrack of Video > Make a story (looped, faded, quieter while people talk)");
+    if (ImGui::MenuItem("Make a music video")) OpenMusicVideo(app, s.path);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Video > Make a music video with this song: your characters sing and act it out");
     if (ImGui::MenuItem("Video for posting", nullptr, false, !cover.empty() && !g_m.postFut.valid())) PostVideo(app, s, cover);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip(cover.empty() ? "It needs a cover" : "An MP4 of the song with its cover (1080 x 1080) and its lyrics as subtitles, for TikTok, Instagram or YouTube");
@@ -1153,12 +1256,14 @@ void DrawPlayerPane(AppState& app) {
         mdl->AddText(ImVec2(tx, y), soft, Ellipsize(meta, tw).c_str());
         // the buttons, under it
         ImGui::SetCursorScreenPos(ImVec2(tx, std::max(y + ImGui::GetFontSize() + ui::Dp(12.0f), cp.y + cs - ui::Dp(50.0f))));
+        const float rowY = ImGui::GetCursorPosY() + (ui::Dp(50.0f) - ImGui::GetFrameHeight()) * 0.5f; // (every button on the middle of the play button)
         if (PlayCircle("##heroplay", heroPlaying && vp && vp->Playing(), ui::Dp(50.0f), kGreen, IM_COL32(0, 0, 0, 255), !SongBusy(h.path))) {
             if (heroPlaying && vp) vp->Toggle();
             else Play(app, h.path);
         }
+        const float playBottom = ImGui::GetItemRectMax().y;
         ImGui::SameLine(0.0f, ui::Dp(14.0f));
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + ui::Dp(12.0f));
+        ImGui::SetCursorPosY(rowY);
         ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
         ImGui::PushStyleColor(ImGuiCol_Border, soft);
         ImGui::PushStyleColor(ImGuiCol_Text, strong);
@@ -1170,14 +1275,16 @@ void DrawPlayerPane(AppState& app) {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip(cover.empty() ? "It needs a cover" : "An MP4 of the song with its cover (1080 x 1080) and its lyrics as subtitles, for TikTok, Instagram or YouTube");
         ImGui::SameLine();
+        ImGui::SetCursorPosY(rowY);
         if (ImGui::Button("Under the story")) {
             SetStoryMusic(h.path);
             Toast(ToastKind::Success, "The story's music", title + " goes under the story when its clips are joined", {}, [](AppState& st) { st.requestTab = 10; }, "music");
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("The soundtrack of Video > Make a story (looped, faded, quieter while people talk)");
         ImGui::SameLine();
+        ImGui::SetCursorPosY(rowY);
         if (ImGui::Button("...")) ImGui::OpenPopup("##heromenu");
-        const float buttonsBottom = ImGui::GetItemRectMax().y;
+        const float buttonsBottom = std::max(playBottom, ImGui::GetItemRectMax().y);
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(3);
         if (ImGui::BeginPopup("##heromenu")) {
@@ -1434,16 +1541,63 @@ void MusicFromPicture(AppState& app, const std::wstring& picture, const std::str
           picture, [](AppState& s) { s.requestTab = 11; }, "music");
 }
 
+void MusicMakeForVideo(AppState& app, const std::string& idea, const std::string& context, const std::vector<std::wstring>& photos, double seconds, bool instrumental) {
+    if (!g_m.loaded) Load();
+    if (g_m.writeFut.valid()) return;
+    g_m.idea = idea;
+    g_m.photos = photos;
+    g_m.photoContext = context;
+    g_m.seconds = std::clamp(seconds, 10.0, 300.0);
+    g_m.instrumental = instrumental;
+    g_m.edited = false;
+    g_m.forVideo = true;
+    Save();
+    CheckModel();
+    g_m.makeAfterWrite = true; // (the button is the Make press)
+    g_m.writeFut = std::async(std::launch::async, WriteMusic, g_m.idea, g_m.seconds, g_m.instrumental, g_m.photos, g_m.photoContext, app.comfy.url);
+}
+
+std::string MusicForVideoStatus() {
+    if (g_m.forVideo && g_m.writeFut.valid()) return "Writing the words and the music...";
+    if (std::any_of(g_m.pending.begin(), g_m.pending.end(), [](const PendingCover& p) { return p.forVideo; })) return "Making the song (MiniMax Music)...";
+    if (g_forVideoBusy > 0) return "Timing its lyrics...";
+    return {};
+}
+
+std::wstring MusicForVideoTake() {
+    std::lock_guard<std::mutex> lock(g_forVideoMutex);
+    return std::exchange(g_forVideoSong, std::wstring());
+}
+
+std::string MusicForVideoFailed() {
+    std::lock_guard<std::mutex> lock(g_forVideoMutex);
+    return std::exchange(g_forVideoFailed, std::string());
+}
+
 bool MusicPlaying() { return g_m.player && g_m.player->IsOpen() && g_m.player->Playing(); }
+
+std::vector<MusicSongInfo> MusicSongs() {
+    std::vector<MusicSongInfo> out;
+    for (const Song& s : g_m.songs) out.push_back({s.path, SongTitle(s), s.seconds});
+    return out;
+}
 
 void PumpMusic(AppState& app) {
     if (!g_m.loaded) Load();
     PumpCovers(app);
     { // what the lyrics passes did
         std::vector<std::pair<std::string, std::string>> notes;
+        std::vector<std::pair<std::wstring, std::wstring>> named;
         {
             std::lock_guard<std::mutex> lock(g_lyricsMutex);
             notes.swap(g_lyricsNotes);
+            named.swap(g_songsNamed);
+        }
+        for (const auto& [from, to] : named) { // a new song, under its own name: it is the one shown now
+            if (from != to) SongRenamed(from, to);
+            g_m.selected = to;
+            g_m.scanned = -100.0;
+            Save();
         }
         for (const auto& [name, note] : notes) {
             if (note.empty()) continue;
@@ -1504,7 +1658,7 @@ void PumpMusic(AppState& app) {
         if (r.rfind("error:", 0) == 0) Toast(ToastKind::Error, "Could not make the video", r.substr(7), {}, {}, "music");
         else Toast(ToastKind::Success, "Video for posting ready", r, {}, [](AppState& s) { s.requestTab = 10; }, "music");
     }
-    if (app.activeTab != 11 && g_m.player && g_m.player->Playing()) g_m.player->Pause(); // the song stops when you leave the tab
+    if (!app.TabShown(11) && g_m.player && g_m.player->Playing()) g_m.player->Pause(); // the song stops when you leave the tab
     // the writer's answer
     if (g_m.writeFut.valid() && g_m.writeFut.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         const Written w = g_m.writeFut.get();
@@ -1521,6 +1675,11 @@ void PumpMusic(AppState& app) {
         } else {
             g_m.writeNote = w.error;
             Toast(ToastKind::Error, "Could not write the music", g_m.writeNote, {}, [](AppState& s) { s.requestTab = 11; }, "music");
+            if (g_m.forVideo) {
+                g_m.forVideo = false;
+                std::lock_guard<std::mutex> lock(g_forVideoMutex);
+                g_forVideoFailed = w.error;
+            }
         }
         g_m.makeAfterWrite = false;
     }
@@ -1606,7 +1765,7 @@ void DrawMusicTab(AppState& app, float height) {
     if (!g_m.have) {
         ImGui::Spacing();
         if (!g_m.known) {
-            ImGui::TextColored(ui::kWarn, "ComfyUI Desktop's models folder was not found: MiniMax Music 3 needs %s, %s and %s there.", kDit, kTextEncoder, kVae);
+            ImGui::TextColored(ui::kWarn, "ComfyUI's models folder was not found: MiniMax Music 3 needs %s, %s and %s there.", kDit, kTextEncoder, kVae);
         } else if (g_m.downloading) {
             ImGui::TextColored(ui::kAccentHover, "Downloading MiniMax Music 3: %.1f of about 12 GB...", DownloadedGb());
         } else {
@@ -1774,7 +1933,7 @@ void DrawMusicTab(AppState& app, float height) {
             if (Chip(o.label, g_m.coverMode == o.mode)) g_m.coverMode = o.mode, changed = true;
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s%s", o.tip, o.ok ? "" : o.mode == kCoverDesign ? "\n\nPhotoCraft is not in tools\\photocraft." : "\n\nAdd a picture first.");
+                ImGui::SetTooltip("%s%s", o.tip, o.ok ? "" : o.mode == kCoverDesign ? "\n\nPhotoCraft is not set up yet (Help > Set up Try2Create, Helpers)." : "\n\nAdd a picture first.");
         }
         // which picture the cover is made from (when there are several)
         if ((g_m.coverMode == kCoverDesign || g_m.coverMode == kCoverPicture) && g_m.photos.size() > 1) {

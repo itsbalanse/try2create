@@ -26,9 +26,11 @@
 #include <set>
 #include <windows.h>
 
+#include "board.h"
 #include "comfy.h"
 #include "imgui.h"
 #include "json.hpp"
+#include "metadata.h"
 #include "ui_extra.h"
 #include "ui_theme.h"
 
@@ -498,6 +500,100 @@ bool StrengthSlider(const char* id, double& strength, float width) {
     return changed;
 }
 
+// Saved sets of LoRAs, per model (lora_sets.json beside the boards): the same picks back in a click, on any page that has a LoRA list
+struct LoraSet {
+    std::string name, model;
+    std::vector<LoraEntry> loras;
+};
+std::vector<LoraSet> g_sets;
+bool g_setsLoaded = false;
+
+fs::path SetsFile() { return fs::path(BoardsDir()).parent_path() / L"lora_sets.json"; }
+
+void LoadSets() {
+    if (g_setsLoaded) return;
+    g_setsLoaded = true;
+    std::ifstream in(SetsFile(), std::ios::binary);
+    if (!in) return;
+    const json j = json::parse(in, nullptr, false);
+    if (!j.is_array()) return;
+    for (const json& s : j) {
+        if (!s.is_object()) continue;
+        LoraSet set{s.value("name", std::string()), s.value("model", std::string()), {}};
+        if (s.contains("loras") && s["loras"].is_array())
+            for (const json& l : s["loras"])
+                if (l.is_object()) set.loras.push_back({l.value("name", std::string()), l.value("strength", 1.0), l.value("on", true)});
+        if (!set.name.empty()) g_sets.push_back(std::move(set));
+    }
+}
+
+void SaveSets() {
+    json j = json::array();
+    for (const LoraSet& s : g_sets) {
+        json loras = json::array();
+        for (const LoraEntry& l : s.loras) loras.push_back({{"name", l.name}, {"strength", l.strength}, {"on", l.on}});
+        j.push_back({{"name", s.name}, {"model", s.model}, {"loras", std::move(loras)}});
+    }
+    std::error_code ec;
+    fs::create_directories(SetsFile().parent_path(), ec);
+    std::ofstream(SetsFile(), std::ios::binary | std::ios::trunc) << j.dump(2);
+}
+
+// "Sets...": this model's saved sets (a click loads one), and saving what is in the list now
+void DrawLoraSets(std::vector<LoraEntry>& list, const char* model, bool& changed) {
+    LoadSets();
+    const std::string m = model ? model : "";
+    if (ImGui::SmallButton("Sets...")) ImGui::OpenPopup("##lorasets");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Save this combination of LoRAs and strengths, or load one you saved");
+    if (!ImGui::BeginPopup("##lorasets")) return;
+    ui::Eyebrow("Saved sets");
+    int shown = 0, drop = -1;
+    for (size_t k = 0; k < g_sets.size(); ++k) {
+        const LoraSet& s = g_sets[k];
+        if (s.model != m) continue;
+        ++shown;
+        ImGui::PushID(static_cast<int>(k));
+        const std::string lbl = s.name + "  (" + std::to_string(s.loras.size()) + ")";
+        if (ImGui::Selectable(lbl.c_str(), false, 0, ImVec2(ui::Dp(280.0f), 0))) {
+            list = s.loras;
+            changed = true;
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+            std::string names;
+            for (const LoraEntry& l : s.loras) {
+                char st[16];
+                snprintf(st, sizeof(st), " %.2f", l.strength);
+                names += ShortName(l.name) + st + (l.on ? "" : " (off)") + "\n";
+            }
+            ImGui::SetTooltip("%s\nClick: load it (it replaces the list)", names.c_str());
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) drop = static_cast<int>(k);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Forget this set (the LoRAs stay)");
+        ImGui::PopID();
+    }
+    if (drop >= 0) g_sets.erase(g_sets.begin() + drop), SaveSets();
+    if (!shown) ImGui::TextDisabled("None yet for %s.", m.empty() ? "this list" : m.c_str());
+    ImGui::Separator();
+    static char name[64] = {};
+    ImGui::SetNextItemWidth(ui::Dp(220.0f));
+    const bool enter = ImGui::InputTextWithHint("##setname", "A name for this set", name, sizeof(name), ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(list.empty() || !name[0]);
+    const bool save = ImGui::SmallButton("Save") || (enter && !list.empty() && name[0]);
+    ImGui::EndDisabled();
+    if (save) {
+        auto same = std::find_if(g_sets.begin(), g_sets.end(), [&](const LoraSet& s) { return s.model == m && s.name == name; });
+        if (same != g_sets.end()) same->loras = list; // (the same name again: that set, updated)
+        else g_sets.push_back({name, m, list});
+        SaveSets();
+        name[0] = 0;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 // One model's LoRAs: on / off, the name, the strength, take it out; "+ LoRA" lists what ComfyUI has for this model
 bool DrawModelLoras(AppState& app, std::vector<LoraEntry>& list, const char* model, const char* id, const char* label) {
     PumpOffers(app);
@@ -604,6 +700,8 @@ bool DrawModelLoras(AppState& app, std::vector<LoraEntry>& list, const char* mod
         }
         ImGui::EndPopup();
     }
+    ImGui::SameLine(0, ui::Dp(6.0f));
+    DrawLoraSets(list, model, changed);
     // the trigger words of those that are on: put into the prompt when it is sent (a LoRA often does little without them)
     std::string words;
     for (const LoraEntry& l : list) {
@@ -624,6 +722,116 @@ bool DrawModelLoras(AppState& app, std::vector<LoraEntry>& list, const char* mod
     ImGui::PopID();
     if (changed) SaveComfySettings(app.comfy);
     return changed;
+}
+
+std::string LoraDisplayName(const std::string& name) { return ShortName(name); }
+
+// The LoRAs a picture was made with, from what its file says: "<lora:name:0.8>" and "Lora hashes" (AUTOMATIC1111 and the like), the loader nodes of
+// a ComfyUI graph (plain, stacks, rgthree's Power Lora Loader), or of its saved workflow when there is no graph. modelFiles: the model files it names.
+std::vector<LoraEntry> LorasInPicture(const ImageMetadata& meta, std::string* modelFiles) {
+    std::vector<LoraEntry> out;
+    auto add = [&](std::string name, double strength) {
+        if (name.empty() || name == "None" || strength == 0.0) return;
+        for (const LoraEntry& l : out)
+            if (LoraFileName(l.name) == LoraFileName(name)) return;
+        out.push_back({std::move(name), strength, true});
+    };
+    const std::string& pos = meta.parsed.positivePrompt;
+    for (const char* tag : {"<lora:", "<lyco:"}) {
+        const size_t len = strlen(tag);
+        for (size_t a = pos.find(tag); a != std::string::npos; a = pos.find(tag, a + len)) {
+            const size_t end = pos.find('>', a);
+            if (end == std::string::npos) break;
+            const std::string in = pos.substr(a + len, end - a - len);
+            const size_t c = in.find(':');
+            add(in.substr(0, c), c == std::string::npos ? 1.0 : atof(in.c_str() + c + 1));
+        }
+    }
+    for (const auto& [key, value] : meta.parsed.params) {
+        if (modelFiles && Lower(key) == "model") *modelFiles += value + " ";
+        if (Lower(key) != "lora hashes") continue;
+        std::string v = value; // "name: hash, name: hash"
+        v.erase(std::remove(v.begin(), v.end(), '"'), v.end());
+        for (size_t a = 0; a < v.size();) {
+            size_t b = v.find(',', a);
+            if (b == std::string::npos) b = v.size();
+            const std::string part = v.substr(a, b - a);
+            const size_t c = part.find(':'), s = part.find_first_not_of(' ');
+            if (c != std::string::npos && s != std::string::npos) add(part.substr(s, c - s), 1.0);
+            a = b + 1;
+        }
+    }
+    auto num = [](const json& v, double def) { return v.is_number() ? v.get<double>() : def; };
+    bool graph = false;
+    for (const RawField& f : meta.rawFields) {
+        if (f.key != "prompt") continue;
+        const json j = json::parse(f.value, nullptr, false);
+        if (!j.is_object()) continue;
+        graph = true;
+        for (const auto& [id, node] : j.items()) {
+            if (!node.is_object() || !node.contains("inputs") || !node["inputs"].is_object()) continue;
+            const json& in = node["inputs"];
+            if (modelFiles)
+                for (const char* k : {"unet_name", "ckpt_name", "model_name", "gguf_name"})
+                    if (in.contains(k) && in[k].is_string()) *modelFiles += in[k].get<std::string>() + " ";
+            const std::string cls = Lower(node.value("class_type", std::string()));
+            if (cls.find("lora") == std::string::npos || cls.find("control") != std::string::npos) continue; // (a control LoRA goes with its control image)
+            if (in.contains("lora_name") && in["lora_name"].is_string()) {
+                add(in["lora_name"].get<std::string>(), in.contains("strength_model") ? num(in["strength_model"], 1.0) : in.contains("strength") ? num(in["strength"], 1.0) : 1.0);
+                continue;
+            }
+            for (const auto& [k, v] : in.items()) {
+                if (v.is_object() && v.contains("lora") && v["lora"].is_string()) { // (rgthree: {on, lora, strength})
+                    if (v.value("on", true)) add(v["lora"].get<std::string>(), v.contains("strength") ? num(v["strength"], 1.0) : 1.0);
+                } else if (v.is_string() && k.rfind("lora_", 0) == 0) { // (stacks: lora_name_1, model_weight_1, switch_1)
+                    const std::string n = k.substr(k.rfind('_') + 1), sw = "switch_" + n;
+                    if (in.contains(sw) && in[sw].is_string() && Lower(in[sw].get<std::string>()) == "off") continue;
+                    add(v.get<std::string>(), in.contains("model_weight_" + n) ? num(in["model_weight_" + n], 1.0) : 1.0);
+                }
+            }
+        }
+    }
+    if (graph) return out;
+    for (const RawField& f : meta.rawFields) {
+        if (f.key != "workflow") continue;
+        const json j = json::parse(f.value, nullptr, false);
+        if (!j.is_object() || !j.contains("nodes") || !j["nodes"].is_array()) continue;
+        for (const json& node : j["nodes"]) {
+            if (!node.is_object() || !node.contains("widgets_values") || !node["widgets_values"].is_array()) continue;
+            const std::string type = Lower(node.value("type", std::string()));
+            if (type.find("lora") == std::string::npos || type.find("control") != std::string::npos) continue;
+            const json& w = node["widgets_values"];
+            if (!w.empty() && w[0].is_string() && w.size() >= 2) add(w[0].get<std::string>(), num(w[1], 1.0));
+            for (const json& v : w)
+                if (v.is_object() && v.contains("lora") && v["lora"].is_string() && v.value("on", true)) add(v["lora"].get<std::string>(), v.contains("strength") ? num(v["strength"], 1.0) : 1.0);
+        }
+    }
+    return out;
+}
+
+// A LoRA's name as this ComfyUI has it (by file name, with or without the extension: a picture may have been made elsewhere); "" = not there.
+// As given when the loras folder is not known.
+std::string ResolveLora(const std::string& name) {
+    static std::map<std::string, std::string> found;
+    static double at = -1000.0;
+    if (ImGui::GetTime() - at > 15.0) {
+        at = ImGui::GetTime();
+        found.clear();
+        const std::wstring dir = ComfyModelsDir();
+        if (!dir.empty()) {
+            const fs::path root = fs::path(dir) / L"loras";
+            std::error_code ec;
+            for (const auto& e : fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec)) {
+                if (!e.is_regular_file(ec)) continue;
+                const std::string rel = U8(e.path().lexically_relative(root).wstring());
+                found[Lower(U8(e.path().filename().wstring()))] = rel;
+                found[Lower(U8(e.path().stem().wstring()))] = rel;
+            }
+        }
+    }
+    if (found.empty()) return name;
+    auto it = found.find(LoraFileName(name));
+    return it == found.end() ? std::string() : it->second;
 }
 
 void OpenLoraSorter() {

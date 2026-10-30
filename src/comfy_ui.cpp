@@ -16,6 +16,7 @@
 #include "imgui_internal.h" // RenderTextEllipsis
 #include "clef.h"
 #include "clef_grades.h"
+#include "recycle_bin.h"
 #include "ui_extra.h"
 #include "video_player.h"
 #include "ui_theme.h"
@@ -126,6 +127,10 @@ std::unique_ptr<VideoPlayer> g_resPlayer;
 bool g_resMuted = false;
 
 // One picture or video in the grid: click to look at it (a video plays in the viewer), double click to open a picture in the gallery.
+ComfyResult g_resDelete; // what a tile or the viewer asked to delete: done before the lists are read, next frame
+
+void AskDeleteResult(const ComfyResult& r) { g_resDelete = r; }
+
 bool DrawResultTile(AppState& app, const ComfyResult& r, float size, int id, bool selected) {
     ImGui::PushID(id);
     const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -158,11 +163,23 @@ bool DrawResultTile(AppState& app, const ComfyResult& r, float size, int id, boo
     }
     if (selected) dl->AddRect(p, p1, ui::WithAlpha(ui::kAccent, 1.0f), ui::Dp(6.0f), 0, ui::Dp(2.5f));
     else if (hovered) dl->AddRect(p, p1, IM_COL32(255, 255, 255, 90), ui::Dp(6.0f), 0, ui::Dp(1.5f));
-    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !r.localPath.empty() && !r.video && !r.audio) { // a video or song plays in the viewer
+    // the x in the corner while hovered: straight to the Recycle Bin
+    const float xr = ui::Dp(10.0f);
+    const ImVec2 xc(p1.x - xr - ui::Dp(3.0f), p.y + xr + ui::Dp(3.0f)), mouse = ImGui::GetIO().MousePos;
+    const bool onX = hovered && !r.localPath.empty() && (mouse.x - xc.x) * (mouse.x - xc.x) + (mouse.y - xc.y) * (mouse.y - xc.y) <= xr * xr;
+    if (hovered && !r.localPath.empty()) {
+        dl->AddCircleFilled(xc, xr, onX ? ui::WithAlpha(ui::kBad, 0.95f) : IM_COL32(0, 0, 0, 190));
+        const float d = xr * 0.42f;
+        dl->AddLine(ImVec2(xc.x - d, xc.y - d), ImVec2(xc.x + d, xc.y + d), IM_COL32_WHITE, ui::Dp(1.6f));
+        dl->AddLine(ImVec2(xc.x - d, xc.y + d), ImVec2(xc.x + d, xc.y - d), IM_COL32_WHITE, ui::Dp(1.6f));
+    }
+    if (onX && clicked) AskDeleteResult(r);
+    if (hovered && !onX && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !r.localPath.empty() && !r.video && !r.audio) { // a video or song plays in the viewer
         app.OpenFile(r.localPath);
         app.requestTab = 0;
     }
-    if (hovered && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+    if (onX) ImGui::SetTooltip("Delete (to the Recycle Bin)");
+    else if (hovered && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
         if (r.seconds > 0) ImGui::SetTooltip("%s\n%s\nMade in %s", r.filename.c_str(), r.label.c_str(), FormatTook(r.seconds).c_str());
         else ImGui::SetTooltip("%s\n%s", r.filename.c_str(), r.label.c_str());
     }
@@ -176,13 +193,18 @@ bool DrawResultTile(AppState& app, const ComfyResult& r, float size, int id, boo
             }
         }
         if (ImGui::MenuItem("Show in Explorer")) ShowFileInExplorer(r.localPath);
+        if (!r.audio && ImGui::MenuItem("Use its LoRAs on Generate")) GenerateUseLoras(app, ReadImageMetadata(r.localPath));
+        if (!r.audio && !r.video && ImGui::MenuItem("Extract characters from it...")) OpenCharacterExtract(app, r.localPath);
+        if (!r.audio && !r.video && ImGui::MenuItem("Make it 3D...")) OpenThreeD(app, r.localPath);
         if (!r.audio && ImGui::MenuItem("Test LoRA mixes on it...")) TestLoraMixesOn(app, r.localPath);
         if (!r.audio) NsfwMarkMenu(app, r.localPath);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Delete (to the Recycle Bin)")) AskDeleteResult(r);
         ImGui::EndDisabled();
         ImGui::EndPopup();
     }
     ImGui::PopID();
-    return clicked;
+    return clicked && !onX;
 }
 
 // Everything ComfyUI made this session: a grid on the left and a viewer on the right (arrow keys, mouse wheel zoom, drag to pan).
@@ -283,15 +305,19 @@ void DrawResultsGrid(AppState& app, const std::vector<ComfyResult>& results, flo
 
 }
 
+bool* g_viewFold = nullptr; // (set by DrawMakerColumns: the viewer's fold button folds it there)
+
 void DrawResultsViewer(AppState& app, const std::vector<ComfyResult>& results, float h) {
     if (results.empty()) {
         ImGui::BeginChild("##resview", ImVec2(0, h), true);
+        if (g_viewFold && ui::FoldButton("##foldview", "Fold the picture away (the making column gets the room)")) *g_viewFold = true;
         ImGui::TextDisabled("The picture you pick (or the newest) shows here, big.");
         ImGui::EndChild();
         return;
     }
     ImGuiIO& io = ImGui::GetIO();
     int& sel = g_rb.sel;
+    sel = std::clamp(sel, 0, static_cast<int>(results.size()) - 1); // (one may just have been deleted)
     bool& follow = g_rb.follow;
     LoadedImage& img = g_rb.img;
     std::string& imgError = g_rb.imgError;
@@ -302,6 +328,7 @@ void DrawResultsViewer(AppState& app, const std::vector<ComfyResult>& results, f
     const bool media = cur.video || cur.audio;
     VideoPlayer* vp = media && g_resPlayer && g_resPlayer->IsOpen() ? g_resPlayer.get() : nullptr;
     ImGui::BeginChild("##resview", ImVec2(0, h), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    if (g_viewFold && ui::FoldButton("##foldview", "Fold the picture away (the making column gets the room)")) *g_viewFold = true;
     bool want100 = false;
     if (ImGui::SmallButton("< Older")) { sel = std::max(0, sel - 1); follow = false; }
     ImGui::SameLine();
@@ -359,8 +386,8 @@ void DrawResultsViewer(AppState& app, const std::vector<ComfyResult>& results, f
         ui::SameLineIfFits("Box edit...");
         if (ImGui::SmallButton("Box edit...")) OpenLayoutStudio(app, cur.localPath);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Recolour, remove, replace or reword what is inside a box (MOSS, ~4 s); the rest stays exactly");
-        ui::SameLineIfFits("Characters from it...");
-        if (ImGui::SmallButton("Characters from it...")) OpenCharacterExtract(app, cur.localPath);
+        ui::SameLineIfFits("Extract characters...");
+        if (ImGui::SmallButton("Extract characters...")) OpenCharacterExtract(app, cur.localPath);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Every person or creature in it becomes one of your characters, with a name and a backstory");
         ui::SameLineIfFits("Upscale...");
         if (ImGui::SmallButton("Upscale...")) OpenUpscaler(app, {cur.localPath});
@@ -382,6 +409,9 @@ void DrawResultsViewer(AppState& app, const std::vector<ComfyResult>& results, f
         app.SetStatus(msg);
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("A copy without its metadata (no prompt, no workflow inside), to post");
+    ui::SameLineIfFits("Delete");
+    if (ImGui::SmallButton("Delete##viewer")) AskDeleteResult(cur);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("To the Recycle Bin");
     ImGui::EndDisabled();
 
     const ImVec2 avail = ImGui::GetContentRegionAvail();
@@ -508,6 +538,7 @@ bool SendToComfy(AppState& app, const std::string& prompt, const std::string& ne
         app.SetStatus("There is no prompt to send");
         return false;
     }
+    GenerateShowSent(prompt); // (sent from a picture, the board...: Generate's box shows it, its old pictures and pose cleared)
     if (!app.comfy.useLastRun && app.comfy.savedWorkflow.empty() && app.comfy.workflowPath.empty()) {
         app.requestTab = 4;
         app.SetStatus("Choose which ComfyUI workflow to run first (Generate page)");
@@ -623,78 +654,47 @@ void ComfyWorkflowMenu(AppState& app) {
     if (changed) SaveComfySettings(s);
 }
 
-void DrawComfyTab(AppState& app, float height) {
-    EnsureComfy(app);
+namespace {
+
+// Generate > Settings: ComfyUI and your workflow on the left, picture edits and their LoRAs on the right. Returns whether a setting changed.
+bool DrawComfySettings(AppState& app) {
     ComfySettings& s = app.comfy;
     ComfyService& svc = *app.comfySvc;
-    RefreshListSometimes(app, 30.0);
     static std::string checkMessage;
     static bool checkOk = false;
     static ComfyTemplateInfo tmpl;
     static bool tmplValid = false;
     bool changed = false;
-
-    // two columns: making (what to make, what was made, ComfyUI, what was sent) on the left; the picture, big, on the right
-    if (!ImGui::BeginTable("##genpage", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings, ImVec2(0, height))) return;
-    ImGui::TableSetupColumn("make", ImGuiTableColumnFlags_WidthStretch, 0.46f);
-    ImGui::TableSetupColumn("view", ImGuiTableColumnFlags_WidthStretch, 0.54f);
-    ImGui::TableNextRow(0, height);
+    static bool startTest = [] { // MV_UI_TEST "comfystart" starts the background server once, as its button does (tests)
+        char buf[256] = {};
+        return GetEnvironmentVariableA("MV_UI_TEST", buf, sizeof(buf)) && strstr(buf, "comfystart") != nullptr;
+    }();
+    static bool bridgeTest = [] { // MV_UI_TEST "comfybridge" adds the browser bridge once, as the popup's button does (tests)
+        char buf[256] = {};
+        return GetEnvironmentVariableA("MV_UI_TEST", buf, sizeof(buf)) && strstr(buf, "comfybridge") != nullptr;
+    }();
+    if (bridgeTest) {
+        bridgeTest = false;
+        std::string message;
+        ComfyInstallBridge(message);
+        app.SetStatus(message);
+    }
+    if (startTest) {
+        startTest = false;
+        std::string message;
+        ComfyStart(s, message);
+        app.SetStatus(message);
+    }
+    if (!ImGui::BeginTable("##gensettings", 2, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_PadOuterX)) return false;
+    ImGui::TableSetupColumn("left", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+    ImGui::TableSetupColumn("right", ImGuiTableColumnFlags_WidthStretch, 0.5f);
+    ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(12.0f), ui::Dp(10.0f))); // (not against the page's edge)
-    ImGui::BeginChild("##comfytab", ImVec2(0, height), ImGuiChildFlags_AlwaysUseWindowPadding);
-    ImGui::PopStyleVar();
     ImGui::PushTextWrapPos(0);
-    DrawGenerateComposer(app);
-    ImGui::Spacing();
-    // ---- 4. what ComfyUI made: a grid and a viewer
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Made");
-    const std::vector<ComfyResult> results = svc.Results();
-    if (!results.empty()) {
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Clear the list")) {
-            const int n = svc.ClearResults(false);
-            app.SetStatus("Cleared " + std::to_string(n) + (n == 1 ? " picture" : " pictures") + " from the list (the files are still on disk)");
-        }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Empties this list. Nothing is deleted: the files stay in ComfyUI's output folder.");
-        ui::SameLineIfFits("Take off moved or deleted files");
-        if (ImGui::SmallButton("Take off moved or deleted files")) {
-            const int n = svc.ClearResults(true);
-            app.SetStatus(n == 0 ? std::string("Every file on the list is still there") : "Took " + std::to_string(n) + (n == 1 ? " missing file" : " missing files") + " off the list");
-        }
-    }
-    const std::wstring outDirNow = ComfyOutputDir(s);
-    if (!outDirNow.empty()) {
-        ui::SameLineIfFits("All of ComfyUI's output in the gallery");
-        if (ImGui::SmallButton("All of ComfyUI's output in the gallery")) {
-            app.OpenFolder(outDirNow);
-            app.requestTab = 0;
-        }
-        ui::SameLineIfFits("Show in Explorer");
-        if (ImGui::SmallButton("Show in Explorer")) OpenWithWindows(outDirNow);
-    }
-    ResultsPrepare(app, results);
-    DrawResultsGrid(app, results, std::max(ui::Dp(200.0f), ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 3.0f));
 
-    // ---- 1. is ComfyUI running, and where do prompts go (folded: open while it is not running)
+    // ---- ComfyUI: is it running, how it starts
+    ui::SectionHeading("ComfyUI");
     const bool up = svc.Reachable();
-    if (!up && !ComfyOwned()) { // (one line: everything else about ComfyUI is folded below)
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(ui::kBad, "ComfyUI is not running");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Start it##genstart")) {
-            std::string message;
-            ComfyStart(s, message);
-            app.SetStatus(message);
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("(it also starts by itself when you press Make)");
-    }
-    const bool showConn = ImGui::CollapsingHeader(up ? "ComfyUI: running - your workflow, the server###comfyconn" : "ComfyUI: not running - your workflow, the server###comfyconn");
-    if (showConn) {
     const ImVec2 dot = ImGui::GetCursorScreenPos();
     const float r = ImGui::GetTextLineHeight() * 0.35f;
     ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(dot.x + r + 2, dot.y + ImGui::GetTextLineHeight() * 0.5f), r, ImGui::GetColorU32(up ? ui::kGood : ui::kBad));
@@ -702,13 +702,13 @@ void DrawComfyTab(AppState& app, float height) {
     ImGui::SameLine();
     if (up) {
         const std::string v = svc.Version();
-        ImGui::Text("ComfyUI is running%s at %s", v.empty() ? "" : (" (" + v + ")").c_str(), s.url.c_str());
+        ImGui::Text("Running%s at %s", v.empty() ? "" : (" (" + v + ")").c_str(), s.url.c_str());
     } else {
-        ImGui::Text("ComfyUI is not running at %s", s.url.c_str());
+        ImGui::Text("Not running at %s", s.url.c_str());
     }
     if (ComfyOwned()) {
         ImGui::SameLine();
-        ImGui::TextDisabled("(started by this app, runs in the background and closes with it)");
+        ImGui::TextDisabled("(started by this app, closes with it)");
     }
     if (up && !ComfyOwned()) {
         // nothing to do
@@ -773,13 +773,69 @@ void DrawComfyTab(AppState& app, float height) {
             ImGui::EndPopup();
         }
     }
-    ImGui::TextDisabled("Every Send to ComfyUI button runs in the workflow below. If ComfyUI is not running it starts in the background, with no window.");
     ImGui::Spacing();
-
-    // ---- 2. which workflow
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Send prompt runs:");
+    if (InputStr("##comfyurl", "http://127.0.0.1:8188", s.url, ui::Dp(260.0f))) changed = true;
     ImGui::SameLine();
+    ImGui::TextDisabled("its address");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Test")) checkOk = ComfyCheck(s.url, checkMessage);
+    if (!checkMessage.empty()) ImGui::TextColored(checkOk ? ui::kGood : ui::kBad, "%s", checkMessage.c_str());
+    if (ImGui::Checkbox("Start ComfyUI by itself when I send a prompt and it is not running", &s.autoStart)) changed = true;
+    if (ImGui::Checkbox("Close the ComfyUI this app started when I close this app", &s.closeWithApp)) changed = true;
+    ImGui::SetNextItemWidth(ui::Dp(260.0f));
+    const char* modes[] = {"A background server (no window)", "The ComfyUI Desktop app"};
+    if (ImGui::Combo("How to start it", &s.startMode, modes, 2)) changed = true;
+    if (s.startMode == 1 && ImGui::Checkbox("Show the Desktop window when it starts", &s.showWindow)) changed = true;
+    if (s.startMode == 0) {
+        float gb = static_cast<float>(s.vramHeadroom);
+        ImGui::SetNextItemWidth(ui::Dp(260.0f));
+        if (ImGui::SliderFloat("Graphics memory to keep free", &gb, 0.0f, 8.0f, gb < 0.05f ? "ComfyUI's default" : "%.1f GB")) {
+            s.vramHeadroom = std::round(gb * 2.0f) / 2.0;
+            changed = true;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip("For the background server (ComfyUI 0.40 and newer; used the next time it starts).\n"
+                              "Big models such as MiniMax H3 otherwise fill the card to the last few hundred MB, and steps stall\n"
+                              "(2-4x slower), worse when another app or a game takes some memory. A few GB free costs almost no speed.");
+        float rgb = static_cast<float>(s.ramHeadroom);
+        ImGui::SetNextItemWidth(ui::Dp(260.0f));
+        if (ImGui::SliderFloat("RAM to keep free", &rgb, 0.0f, 64.0f, rgb < 0.5f ? "ComfyUI's default (10 GB)" : "%.0f GB")) {
+            s.ramHeadroom = std::round(rgb);
+            changed = true;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip("For the background server (used the next time it starts). ComfyUI keeps models and results in RAM until only\n"
+                              "this much is free, then lets go of them between steps of a job. Its own default is 10 GB, which lets a long\n"
+                              "video job fill the RAM of a big PC. More free RAM means some models load again from disk the next time.\n"
+                              "(At most a third of this PC's RAM is used.)");
+    }
+    if (ImGui::Checkbox("Run it behind other programs (keeps the PC smooth while it generates)", &s.background)) changed = true;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("ComfyUI started by this app gets below-normal CPU and GPU priority: the desktop, a browser playing a video and this app\n"
+                          "get the graphics card first, and generation uses what is left (it is only slower while something else needs the GPU).\n"
+                          "Used the next time it starts.");
+    if (ImGui::TreeNode("Where ComfyUI is")) {
+        std::wstring found;
+        ComfyFindDesktop(found);
+        std::string exe = ToUtf8(s.desktopExe);
+        if (InputStr("##comfyexe", found.empty() ? "ComfyUI Desktop program (blank = automatic)" : ToUtf8(found).c_str(), exe, ui::Dp(430.0f))) {
+            s.desktopExe = ToWide(exe);
+            changed = true;
+        }
+        const std::wstring outDir = ComfyOutputDir(s);
+        std::string out = ToUtf8(s.outputDir);
+        if (InputStr("##comfyout", outDir.empty() ? "ComfyUI's output folder (blank = automatic)" : ToUtf8(outDir).c_str(), out, ui::Dp(430.0f))) {
+            s.outputDir = ToWide(out);
+            changed = true;
+        }
+        ImGui::TextDisabled("The background server's log: %%LOCALAPPDATA%%\\Try2Create\\comfy_server.log");
+        ImGui::TreePop();
+    }
+
+    // ---- My workflow: which one, what gets sent into it
+    ImGui::Spacing();
+    ui::SectionHeading("My workflow");
+    ImGui::TextDisabled("What the My workflow maker (and Send to ComfyUI on a picture) runs.");
     ImGui::SetNextItemWidth(ui::Dp(340.0f));
     if (ImGui::BeginCombo("##comfywf", CurrentWorkflowLabel(s).c_str())) {
         if (ImGui::Selectable("The workflow ComfyUI ran last", s.useLastRun)) {
@@ -817,8 +873,6 @@ void DrawComfyTab(AppState& app, float height) {
     ImGui::EndDisabled();
     const std::string listMessage = svc.ListMessage();
     if (!listMessage.empty()) ImGui::TextDisabled("%s", listMessage.c_str());
-    ImGui::TextDisabled("Picture edits (Vision board, Edit with Qwen..., Characters, Clef mode) run the built-in Qwen Image 2.1 Edit workflow with %s, up to 10 pictures.",
-                        s.editUnet.empty() ? "the standard Qwen Image 2.1 model" : s.editUnet.c_str());
     if (!s.useLastRun && s.savedWorkflow.empty()) {
         ImGui::TextWrapped("%s", s.workflowPath.empty() ? "(no file chosen yet)" : ToUtf8(s.workflowPath).c_str());
         if (ImGui::Button("Choose file...")) {
@@ -843,255 +897,377 @@ void DrawComfyTab(AppState& app, float height) {
         }
     }
     if (tmplValid) {
-        ImGui::PushTextWrapPos(0);
         if (tmpl.ok) {
             ImGui::TextColored(ui::kGood, "This workflow works: %d nodes", tmpl.nodes);
             ImGui::TextDisabled("%s", tmpl.summary.c_str());
         } else {
             ImGui::TextColored(ui::kBad, "%s", tmpl.error.c_str());
         }
-        ImGui::PopTextWrapPos();
     }
-
-    } // (ComfyUI's connection and workflow)
-
-    // ---- 5. the rest (rarely needed)
-    ImGui::Spacing();
-    static const bool optsTest = [] { // MV_UI_TEST "comfyopts" opens it (tests)
-        char buf[256] = {};
-        return GetEnvironmentVariableA("MV_UI_TEST", buf, sizeof(buf)) && strstr(buf, "comfyopts") != nullptr;
-    }();
-    if (optsTest) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-    static bool startTest = [] { // MV_UI_TEST "comfystart" starts the background server once, as its button does (tests)
-        char buf[256] = {};
-        return GetEnvironmentVariableA("MV_UI_TEST", buf, sizeof(buf)) && strstr(buf, "comfystart") != nullptr;
-    }();
-    static bool bridgeTest = [] { // MV_UI_TEST "comfybridge" adds the browser bridge once, as the popup's button does (tests)
-        char buf[256] = {};
-        return GetEnvironmentVariableA("MV_UI_TEST", buf, sizeof(buf)) && strstr(buf, "comfybridge") != nullptr;
-    }();
-    if (bridgeTest) {
-        bridgeTest = false;
-        std::string message;
-        ComfyInstallBridge(message);
-        app.SetStatus(message);
-    }
-    if (startTest) {
-        startTest = false;
-        std::string message;
-        ComfyStart(s, message);
-        app.SetStatus(message);
-    }
-    if (ImGui::CollapsingHeader("Options")) {
-        if (InputStr("##comfyurl", "http://127.0.0.1:8188", s.url, ui::Dp(260.0f))) changed = true;
+    if (ImGui::Checkbox("Copy ComfyUI's saved workflows into my Workflows page by themselves", &s.autoImport)) changed = true;
+    if (ImGui::Checkbox("New random seed for every run", &s.randomSeed)) changed = true;
+    if (ImGui::Checkbox("Also send the picture's negative prompt (gallery pictures)", &s.sendNegative)) changed = true;
+    if (ImGui::Checkbox("Also send the picture itself, into the workflow's Load Image node (img2img)", &s.sendPicture)) changed = true;
+    if (ImGui::Checkbox("Video workflows: set the clip length from the prompt's seconds", &s.videoLength)) changed = true;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Video prompts always send their picture as the first frame.");
+    if (s.videoLength) {
         ImGui::SameLine();
-        ImGui::TextDisabled("ComfyUI's address");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Test")) checkOk = ComfyCheck(s.url, checkMessage);
-        if (!checkMessage.empty()) ImGui::TextColored(checkOk ? ui::kGood : ui::kBad, "%s", checkMessage.c_str());
-        if (ImGui::Checkbox("Start ComfyUI by itself when I send a prompt and it is not running", &s.autoStart)) changed = true;
-        if (ImGui::Checkbox("Close the ComfyUI this app started when I close this app", &s.closeWithApp)) changed = true;
-        if (ImGui::Checkbox("Copy ComfyUI's saved workflows into my Workflows page by themselves", &s.autoImport)) changed = true;
-        ImGui::SetNextItemWidth(ui::Dp(260.0f));
-        const char* modes[] = {"A background server (no window)", "The ComfyUI Desktop app"};
-        if (ImGui::Combo("How to start it", &s.startMode, modes, 2)) changed = true;
-        if (s.startMode == 1 && ImGui::Checkbox("Show the Desktop window when it starts", &s.showWindow)) changed = true;
-        if (s.startMode == 0) {
-            float gb = static_cast<float>(s.vramHeadroom);
-            ImGui::SetNextItemWidth(ui::Dp(260.0f));
-            if (ImGui::SliderFloat("Graphics memory to keep free", &gb, 0.0f, 8.0f, gb < 0.05f ? "ComfyUI's default" : "%.1f GB")) {
-                s.vramHeadroom = std::round(gb * 2.0f) / 2.0;
-                changed = true;
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("For the background server (ComfyUI 0.40 and newer; used the next time it starts).\n"
-                                  "Big models such as MiniMax H3 otherwise fill the card to the last few hundred MB, and steps stall\n"
-                                  "(2-4x slower), worse when another app or a game takes some memory. A few GB free costs almost no speed.");
-            float rgb = static_cast<float>(s.ramHeadroom);
-            ImGui::SetNextItemWidth(ui::Dp(260.0f));
-            if (ImGui::SliderFloat("RAM to keep free", &rgb, 0.0f, 64.0f, rgb < 0.5f ? "ComfyUI's default (10 GB)" : "%.0f GB")) {
-                s.ramHeadroom = std::round(rgb);
-                changed = true;
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("For the background server (used the next time it starts). ComfyUI keeps models and results in RAM until only\n"
-                                  "this much is free, then lets go of them between steps of a job. Its own default is 10 GB, which lets a long\n"
-                                  "video job fill a 128 GB PC. More free RAM means some models load again from disk the next time.\n"
-                                  "(At most a third of this PC's RAM is used.)");
-        }
-        if (ImGui::Checkbox("Run it behind other programs (keeps the PC smooth while it generates)", &s.background)) changed = true;
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("ComfyUI started by this app gets below-normal CPU and GPU priority: the desktop, a browser playing a video and this app\n"
-                              "get the graphics card first, and generation uses what is left (it is only slower while something else needs the GPU).\n"
-                              "Used the next time it starts.");
-        std::wstring found;
-        ComfyFindDesktop(found);
-        std::string exe = ToUtf8(s.desktopExe);
-        if (InputStr("##comfyexe", found.empty() ? "ComfyUI Desktop program (blank = automatic)" : ToUtf8(found).c_str(), exe, ui::Dp(430.0f))) {
-            s.desktopExe = ToWide(exe);
+        ImGui::SetNextItemWidth(ui::Dp(100.0f));
+        if (ImGui::InputInt("fps if the workflow has none", &s.defaultFps, 0, 0)) {
+            s.defaultFps = std::clamp(s.defaultFps, 1, 120);
             changed = true;
         }
-        const std::wstring outDir = ComfyOutputDir(s);
-        std::string out = ToUtf8(s.outputDir);
-        if (InputStr("##comfyout", outDir.empty() ? "ComfyUI's output folder (blank = automatic)" : ToUtf8(outDir).c_str(), out, ui::Dp(430.0f))) {
-            s.outputDir = ToWide(out);
-            changed = true;
-        }
-        ImGui::Spacing();
-        ImGui::TextUnformatted("What gets sent");
-        if (ImGui::Checkbox("New random seed for every run", &s.randomSeed)) changed = true;
-        if (ImGui::Checkbox("Also send the picture's negative prompt (gallery pictures)", &s.sendNegative)) changed = true;
-        if (ImGui::Checkbox("Also send the picture itself, into the workflow's Load Image node (img2img)", &s.sendPicture)) changed = true;
-        ImGui::TextDisabled("Video prompts always send their picture as the first frame.");
-        if (ImGui::Checkbox("Video workflows: set the clip length from the prompt's seconds", &s.videoLength)) changed = true;
-        if (s.videoLength) {
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(ui::Dp(100.0f));
-            if (ImGui::InputInt("fps if the workflow has none", &s.defaultFps, 0, 0)) {
-                s.defaultFps = std::clamp(s.defaultFps, 1, 120);
+    }
+    ImGui::SetNextItemWidth(ui::Dp(200.0f));
+    if (ImGui::SliderInt("Pictures per click (the Vision library has its own)", &s.count, 1, 8)) changed = true;
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Its LoRAs");
+    DrawLoraList(s, s.promptLoras, "loraprompt");
+    if (ImGui::Checkbox("Take out the LoRAs that workflow already has first##lorareplace", &s.promptReplaceLoras)) changed = true;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Bypasses the workflow's own LoRA loader nodes (the standard ones), so only the list above is loaded.\nUntick it to add these on top of the workflow's own.");
+    ImGui::TextDisabled("If the prompt goes to the wrong node, enter its id (the # badge in ComfyUI):");
+    if (InputStr("##comfyprompt", "prompt node id (blank = automatic)", s.promptNode, ui::Dp(260.0f))) changed = true;
+    if (InputStr("##comfyneg", "negative prompt node id (blank = automatic)", s.negativeNode, ui::Dp(260.0f))) changed = true;
+    ImGui::PopTextWrapPos();
+
+    // ---- picture edits (the right column)
+    ImGui::TableSetColumnIndex(1);
+    ImGui::PushTextWrapPos(0);
+    ui::SectionHeading("Picture edits");
+    ImGui::TextDisabled("Edits from Generate, the Vision board, Characters, Clef mode and the edit window.");
+    if (DrawEditorChoice(s)) changed = true;
+    if (DrawEditModelPicker(s, "optmodel")) changed = false; // saved by the picker itself
+    ImGui::SetNextItemWidth(ui::Dp(200.0f));
+    if (ImGui::SliderInt("Steps##editsteps", &s.editSteps, 4, 60)) changed = true;
+    ImGui::SetNextItemWidth(ui::Dp(200.0f));
+    if (ImGui::SliderInt("Size (pixels, 0 = like the first picture)##editres", &s.editResolution, 0, 2048)) changed = true;
+    if (ImGui::Checkbox("Go to the Edits tab each time I send an edit", &s.editJump)) changed = true;
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Edit LoRAs (Qwen)");
+    DrawLoraList(s, s.editLoras, "loraedit");
+    ImGui::Spacing();
+    ui::SectionHeading("Vision board scenes");
+    ImGui::SetNextItemWidth(ui::Dp(380.0f));
+    if (ImGui::BeginCombo("How freely to change the characters##optstyle", EditStyleName(s.editStyle))) {
+        for (int m = 0; m <= 2; ++m) {
+            if (ImGui::Selectable(EditStyleName(m), s.editStyle == m)) {
+                s.editStyle = m;
                 changed = true;
             }
         }
-        ImGui::SetNextItemWidth(ui::Dp(200.0f));
-        if (ImGui::SliderInt("Pictures per click (the Vision library has its own)", &s.count, 1, 8)) changed = true;
-        ImGui::Spacing();
-        ImGui::TextUnformatted("Picture editing (Qwen Image 2.1 Edit)");
-        {
-            ImGui::SetNextItemWidth(ui::Dp(430.0f));
-            if (ImGui::BeginCombo("Board scenes: how freely to change the characters##optstyle", EditStyleName(s.editStyle))) {
-                for (int m = 0; m <= 2; ++m) {
-                    if (ImGui::Selectable(EditStyleName(m), s.editStyle == m)) {
-                        s.editStyle = m;
-                        changed = true;
-                    }
-                }
-                ImGui::EndCombo();
-            }
-        }
-        ImGui::TextUnformatted("Board scenes: tell the model to change");
-        ImGui::SameLine();
-        if (ImGui::Checkbox("outfits##optout", &s.directOutfit)) changed = true;
-        ImGui::SameLine();
-        if (ImGui::Checkbox("poses##optpose", &s.directPose)) changed = true;
-        ImGui::SameLine();
-        if (ImGui::Checkbox("expressions##optexp", &s.directExpression)) changed = true;
-        if (ImGui::Checkbox("Go to the Edits tab each time I send an edit", &s.editJump)) changed = true;
-        if (DrawEditModelPicker(s, "optmodel")) changed = false; // saved by the picker itself
-        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-        if (ImGui::TreeNode("LoRAs: which ones load on top of the model, at what strength")) {
-            ImGui::PushTextWrapPos(0);
-            ImGui::TextDisabled("Each list is loaded in order, on the model only (files of ComfyUI's models/loras). Untick one to keep it in the list without loading it.");
-            ImGui::PopTextWrapPos();
-            ImGui::Spacing();
-            ImGui::TextUnformatted("Picture edits (Qwen: the edit window, Vision board scenes, Clef mode)");
-            DrawLoraList(s, s.editLoras, "loraedit");
-            ImGui::Spacing();
-            ImGui::TextUnformatted("The ComfyUI workflow chosen above (Krea or any other: Send prompt, Clef mode text prompts)");
-            DrawLoraList(s, s.promptLoras, "loraprompt");
-            if (ImGui::Checkbox("Take out the LoRAs that workflow already has first##lorareplace", &s.promptReplaceLoras)) changed = true;
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("Bypasses the workflow's own LoRA loader nodes (the standard ones), so only the list above is loaded.\nUntick it to add these on top of the workflow's own.");
-            ImGui::TextDisabled("They are put on the model that feeds the sampler, whatever the workflow looks like.");
-            ImGui::Spacing();
-            ImGui::TextUnformatted("Edits > Upscale: the MOSS-Image redraw pass (MOSS LoRAs only)");
-            DrawLoraList(s, s.upscaleLoras, "loraupscale");
-            ImGui::TreePop();
-        }
-        ImGui::SetNextItemWidth(ui::Dp(200.0f));
-        if (ImGui::SliderInt("Steps##editsteps", &s.editSteps, 4, 60)) changed = true;
-        ImGui::SetNextItemWidth(ui::Dp(200.0f));
-        if (ImGui::SliderInt("Size (pixels, 0 = like the first picture)##editres", &s.editResolution, 0, 2048)) changed = true;
-        ImGui::TextDisabled("If the prompt goes to the wrong node, enter its id (the # badge in ComfyUI):");
-        if (InputStr("##comfyprompt", "prompt node id (blank = automatic)", s.promptNode, ui::Dp(260.0f))) changed = true;
-        if (InputStr("##comfyneg", "negative prompt node id (blank = automatic)", s.negativeNode, ui::Dp(260.0f))) changed = true;
-        ImGui::TextDisabled("The background server's log: %%LOCALAPPDATA%%\\Try2Create\\comfy_server.log");
+        ImGui::EndCombo();
     }
-    // ---- 3. what happened to everything sent
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Tell the model to change");
+    ImGui::SameLine();
+    if (ImGui::Checkbox("outfits##optout", &s.directOutfit)) changed = true;
+    ImGui::SameLine();
+    if (ImGui::Checkbox("poses##optpose", &s.directPose)) changed = true;
+    ImGui::SameLine();
+    if (ImGui::Checkbox("expressions##optexp", &s.directExpression)) changed = true;
     ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
+    ui::SectionHeading("Edits > Upscale");
+    ImGui::TextDisabled("The MOSS-Image redraw pass's LoRAs (MOSS LoRAs only). Each list loads in order, on the model only; untick one to keep it without loading it.");
+    DrawLoraList(s, s.upscaleLoras, "loraupscale");
+    ImGui::PopTextWrapPos();
+    ImGui::EndTable();
+    if (changed) tmplValid = false;
+    return changed;
+}
+
+// Generate > Sent: what happened to everything sent
+void DrawSentList(AppState& app) {
+    ComfyService& svc = *app.comfySvc;
     static int hiddenUpTo = 0; // "Clear the finished ones": finished sends up to this one are not listed (the service keeps them: pages still read them)
     std::vector<ComfyActivity> activity = svc.Activity();
     activity.erase(std::remove_if(activity.begin(), activity.end(), [](const ComfyActivity& a) {
                        return a.id <= hiddenUpTo && (a.state == ComfyState::Done || a.state == ComfyState::Failed);
                    }),
                    activity.end());
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("What you sent");
     const bool anyFinished = std::any_of(activity.begin(), activity.end(), [](const ComfyActivity& a) { return a.state == ComfyState::Done || a.state == ComfyState::Failed; });
     if (anyFinished) {
-        ImGui::SameLine();
         if (ImGui::SmallButton("Clear the finished ones")) {
             for (const ComfyActivity& a : activity) hiddenUpTo = std::max(hiddenUpTo, a.id);
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Takes the done and failed ones off this list (what is still running stays)");
     }
     if (activity.empty()) {
-        ImGui::TextDisabled("Nothing yet: write what to make above and press Make (or Send to ComfyUI on a picture, a Vision library item or the Vision board).");
-    } else {
-        ImGui::BeginChild("##comfyactivity", ImVec2(0, ui::Dp(130.0f)), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
-        for (size_t i = activity.size(); i-- > 0;) {
-            const ComfyActivity& a = activity[i];
-            ImGui::PushID(a.id);
-            ImGui::TextColored(StateColor(a.state), "%s", StateName(a.state));
-            ImGui::SameLine();
-            ImGui::TextUnformatted(a.label.c_str());
-            ImGui::SameLine();
-            ImGui::TextDisabled("  %s", Elapsed(a).c_str());
-            ImGui::PushTextWrapPos(0);
-            ImGui::TextColored(a.state == ComfyState::Failed ? ui::kBad : ui::kTextDim, "%s", a.message.c_str());
-            if (a.state != ComfyState::Failed && a.state != ComfyState::Done) ImGui::TextDisabled("in %s, at %s", a.workflow.c_str(), a.address.c_str());
-            ImGui::PopTextWrapPos();
-            if (a.state == ComfyState::Running) DrawComfyJobProgress(a.id);
-            if (a.state != ComfyState::Failed && a.state != ComfyState::Done) {
-                if (ImGui::SmallButton(a.state == ComfyState::Running ? "Stop" : "Cancel")) svc.Cancel(a.id);
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                    ImGui::SetTooltip(a.state == ComfyState::Running ? "Interrupts this run only (someone else's run in the same ComfyUI keeps going)" : "Takes it out before it runs");
-            }
-            if (a.state == ComfyState::Failed && ImGui::SmallButton("Copy the error")) ImGui::SetClipboardText(a.message.c_str());
-            ImGui::Separator();
-            ImGui::PopID();
+        ImGui::TextDisabled("Nothing yet: write what to make on Make and press Make (or Send to ComfyUI on a picture, a Vision library item or the Vision board).");
+        return;
+    }
+    for (size_t i = activity.size(); i-- > 0;) {
+        const ComfyActivity& a = activity[i];
+        ImGui::PushID(a.id);
+        ImGui::TextColored(StateColor(a.state), "%s", StateName(a.state));
+        ImGui::SameLine();
+        ImGui::TextUnformatted(a.label.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("  %s", Elapsed(a).c_str());
+        ImGui::TextColored(a.state == ComfyState::Failed ? ui::kBad : ui::kTextDim, "%s", a.message.c_str());
+        if (a.state != ComfyState::Failed && a.state != ComfyState::Done) ImGui::TextDisabled("in %s, at %s", a.workflow.c_str(), a.address.c_str());
+        if (a.state == ComfyState::Running) DrawComfyJobProgress(a);
+        if (a.state != ComfyState::Failed && a.state != ComfyState::Done) {
+            if (ImGui::SmallButton(a.state == ComfyState::Running ? "Stop" : "Cancel")) svc.Cancel(a.id);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip(a.state == ComfyState::Running ? "Interrupts this run only (someone else's run in the same ComfyUI keeps going)" : "Takes it out before it runs");
         }
-        ImGui::EndChild();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && ImGui::GetMousePos().y > ImGui::GetItemRectMax().y - ui::Dp(6.0f))
-            ImGui::SetTooltip("Drag the bottom edge to make this list taller or shorter");
+        if (a.state == ComfyState::Failed && ImGui::SmallButton("Copy the error")) ImGui::SetClipboardText(a.message.c_str());
+        ImGui::Separator();
+        ImGui::PopID();
+    }
+}
+
+} // namespace
+
+void ResultsLetGo(const std::wstring& path) {
+    if (g_resPlayer && g_resPlayer->IsOpen() && _wcsicmp(g_resPlayer->Path().c_str(), path.c_str()) == 0) g_resPlayer->Close();
+}
+
+void DrawMakerColumns(AppState& app, float height, const char* id, void (*left)(AppState&)) {
+    ComfySettings& s = app.comfy;
+    ComfyService& svc = *app.comfySvc;
+    if (!g_resDelete.localPath.empty()) { // to the Recycle Bin; the player, the list and the gallery let go of it
+        const ComfyResult r = std::move(g_resDelete);
+        g_resDelete = ComfyResult{};
+        const std::wstring& file = r.localPath;
+        ResultsLetGo(file);
+        // a copy fetched from ComfyUI: its original goes too (the same size: not an older file of that name), or it would come back in the gallery
+        std::vector<std::wstring> files = {file};
+        const std::wstring outDir = ComfyOutputDir(s);
+        std::error_code ec;
+        if (!outDir.empty() && r.type == "output") {
+            std::wstring original = outDir + (r.subfolder.empty() ? L"" : L"\\" + ToWide(r.subfolder)) + L"\\" + ToWide(r.filename);
+            std::replace(original.begin(), original.end(), L'/', L'\\');
+            if (_wcsicmp(original.c_str(), file.c_str()) != 0 && fs::exists(original, ec) && fs::file_size(original, ec) == fs::file_size(file, ec)) files.push_back(original);
+        }
+        BinItem item;
+        item.name = r.filename;
+        item.kind = r.video ? 1 : r.audio ? 3 : 0;
+        if (r.video) {
+            for (const std::wstring& side : VideoFilesOf(file))
+                if (std::find(files.begin(), files.end(), side) == files.end()) files.push_back(side);
+            VideoForget(file);
+        }
+        item.files = std::move(files);
+        item.thumb = file;
+        item.hasResult = true;
+        item.result = r;
+        svc.RemoveResult(file);
+        BinAdd(app, std::move(item));
+    }
+    // two columns: making (what to make, what was made) on the left; the picture, big, on the right - either can be folded to a strip
+    static std::map<std::string, int> folds; // by page: 1 = the making column folded, 2 = the picture folded
+    int& fold = folds[id];
+    const float strip = ui::Dp(28.0f);
+    if (fold == 1) {
+        if (ui::FoldStrip("##stripmake", "Make", strip, height)) fold = 0;
+        ImGui::SameLine();
+    }
+    const float tw = ImGui::GetContentRegionAvail().x - (fold == 2 ? strip + ImGui::GetStyle().ItemSpacing.x : 0.0f);
+    const std::string tid = std::string(id) + (fold == 1 ? "_v" : fold == 2 ? "_m" : "");
+    if (!ImGui::BeginTable(tid.c_str(), fold ? 1 : 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings, ImVec2(tw, height))) return;
+    if (fold != 1) ImGui::TableSetupColumn("make", ImGuiTableColumnFlags_WidthStretch, 0.46f);
+    if (fold != 2) ImGui::TableSetupColumn("view", ImGuiTableColumnFlags_WidthStretch, 0.54f);
+    ImGui::TableNextRow(0, height);
+    if (fold == 1) { // (only the picture)
+        ImGui::TableSetColumnIndex(0);
+        DrawResultsViewer(app, svc.Results(), height);
+        ImGui::EndTable();
+        return;
+    }
+    ImGui::TableSetColumnIndex(0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(12.0f), ui::Dp(10.0f))); // (not against the page's edge)
+    ImGui::BeginChild("##comfytab", ImVec2(0, height), ImGuiChildFlags_AlwaysUseWindowPadding);
+    ImGui::PopStyleVar();
+    if (ui::FoldButton("##foldmake", "Fold this column away (the picture gets the room)")) fold = 1;
+    ImGui::PushTextWrapPos(0);
+    left(app);
+    // is ComfyUI running (one line, only when it is not: the rest is in Settings)
+    if (!svc.Reachable() && !ComfyOwned()) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ui::kBad, "ComfyUI is not running");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Start it##genstart")) {
+            std::string message;
+            ComfyStart(s, message);
+            app.SetStatus(message);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(it also starts by itself when you press Make)");
+    }
+    // ---- what ComfyUI made: a grid and a viewer
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::AlignTextToFramePadding();
+    ui::Eyebrow("Made");
+    const std::vector<ComfyResult> results = svc.Results();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("...##madeopts")) ImGui::OpenPopup("##madeoptspop");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Clear the list, see all of ComfyUI's output");
+    if (ImGui::BeginPopup("##madeoptspop")) {
+        if (!results.empty() && ImGui::MenuItem("Clear the list")) {
+            const int n = svc.ClearResults(false);
+            app.SetStatus("Cleared " + std::to_string(n) + (n == 1 ? " picture" : " pictures") + " from the list (the files are still on disk)");
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Empties this list. Nothing is deleted: the files stay in ComfyUI's output folder.");
+        if (!results.empty() && ImGui::MenuItem("Take off moved or deleted files")) {
+            const int n = svc.ClearResults(true);
+            app.SetStatus(n == 0 ? std::string("Every file on the list is still there") : "Took " + std::to_string(n) + (n == 1 ? " missing file" : " missing files") + " off the list");
+        }
+        const std::wstring outDirNow = ComfyOutputDir(s);
+        if (!outDirNow.empty()) {
+            ImGui::Separator();
+            if (ImGui::MenuItem("All of ComfyUI's output in the gallery")) {
+                app.OpenFolder(outDirNow);
+                app.requestTab = 0;
+            }
+            if (ImGui::MenuItem("Show in Explorer")) OpenWithWindows(outDirNow);
+        }
+        ImGui::EndPopup();
+    }
+    ResultsPrepare(app, results);
+    DrawResultsGrid(app, results, std::max(ui::Dp(200.0f), ImGui::GetContentRegionAvail().y - ImGui::GetStyle().ItemSpacing.y));
+    ImGui::PopTextWrapPos();
+    ImGui::EndChild(); // (the left column)
+    if (fold != 2) {
+        ImGui::TableSetColumnIndex(1);
+        bool foldView = false;
+        g_viewFold = &foldView;
+        DrawResultsViewer(app, svc.Results(), height);
+        g_viewFold = nullptr;
+        if (foldView) fold = 2;
+    }
+    ImGui::EndTable();
+    if (fold == 2) {
+        ImGui::SameLine();
+        if (ui::FoldStrip("##stripview", "Picture", strip, height)) fold = 0;
+    }
+}
+
+void DrawComfyTab(AppState& app, float height) {
+    EnsureComfy(app);
+    ComfySettings& s = app.comfy;
+    ComfyService& svc = *app.comfySvc;
+    RefreshListSometimes(app, 30.0);
+    int& sub = GenerateSubTab();
+    { // tests: MV_UI_TEST "comfyopts" opens Settings; "gensub:N" opens sub-tab N
+        static bool once = false;
+        char buf[256] = {};
+        if (!once && GetEnvironmentVariableA("MV_UI_TEST", buf, sizeof(buf))) {
+            once = true;
+            if (strstr(buf, "comfyopts") || strstr(buf, "comfystart") || strstr(buf, "comfybridge")) sub = 3;
+            if (const char* g = strstr(buf, "gensub:")) sub = std::clamp(atoi(g + 7), 0, 3);
+        }
     }
 
-    ImGui::PopTextWrapPos();
-    if (changed) {
-        SaveComfySettings(s);
-        tmplValid = false;
+    // the sub-tabs: Make, Many at once, Sent, Settings
+    {
+        int running = 0;
+        for (const ComfyActivity& a : svc.Activity()) {
+            if (a.state == ComfyState::Running || a.state == ComfyState::Queued) ++running;
+        }
+        auto tab = [](const char* label, bool on) {
+            ImGui::PushStyleColor(ImGuiCol_Button, on ? ui::ChipActiveColor() : ui::ChipColor());
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ui::ChipHoverColor());
+            const bool c = ImGui::Button(label);
+            ImGui::PopStyleColor(2);
+            return c;
+        };
+        const std::string sent = running ? "Sent (" + std::to_string(running) + " making)###gsent" : std::string("Sent###gsent");
+        const char* labels[] = {"Make", "Many at once", sent.c_str(), "Settings"};
+        static const char* const kHint[] = {"Make a picture or a video from a prompt.", "A theme becomes many different pictures.",
+                                            "Everything sent to ComfyUI, and how it went.", "ComfyUI, your workflow, picture edits and their LoRAs."};
+        for (int k = 0; k < 4; ++k) {
+            if (k) ImGui::SameLine(0.0f, ui::Dp(4.0f));
+            if (tab(labels[k], sub == k)) sub = k;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", kHint[sub]);
+        height -= ImGui::GetFrameHeightWithSpacing();
     }
-    ImGui::EndChild(); // (the left column)
-    ImGui::TableSetColumnIndex(1);
-    DrawResultsViewer(app, svc.Results(), height);
-    ImGui::EndTable();
+
+    if (sub >= 2) { // Sent and Settings: the page's whole width
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(12.0f), ui::Dp(10.0f)));
+        ImGui::BeginChild("##gensub", ImVec2(0, height), ImGuiChildFlags_AlwaysUseWindowPadding);
+        ImGui::PopStyleVar();
+        ImGui::PushTextWrapPos(0);
+        if (sub == 2) DrawSentList(app);
+        else if (DrawComfySettings(app)) SaveComfySettings(s);
+        ImGui::PopTextWrapPos();
+        ImGui::EndChild();
+        return;
+    }
+
+    DrawMakerColumns(app, height, "##genpage", sub == 0 ? DrawGenerateComposer : DrawGenerateMany);
+}
+
+std::string SpanText(double seconds) { // "45 s", "3:07", "1 h 05 min"
+    char b[32];
+    const long long s = std::max(0LL, static_cast<long long>(std::llround(seconds)));
+    if (s >= 3600) snprintf(b, sizeof(b), "%lld h %02lld min", s / 3600, (s / 60) % 60);
+    else if (s >= 60) snprintf(b, sizeof(b), "%lld:%02lld", s / 60, s % 60);
+    else snprintf(b, sizeof(b), "%lld s", s);
+    return b;
+}
+
+// Where a running job is, in words, for every place that shows it (2026-10-30: "at step this, generating this clip"): ComfyUI's log says which sampling
+// bar it is on, and the job says what each bar makes
+struct JobNow {
+    std::string stage;   // "Clip 2 of 5", "Loading the models", "Decoding and saving"
+    std::string step;    // "step 3 of 4" ("" = none)
+    float frac = -1.0f;  // of the whole job (< 0: not known)
+    double left = 0;     // seconds left in the whole job (0 = not known)
+    double perStep = 0;
+    int pass = 0, passes = 1; // the pass it is on (from 0; passes: done)
+    bool known = false;  // from ComfyUI's log (only a ComfyUI this app started writes one here)
+};
+
+JobNow ReadJobNow(const ComfyActivity& a) {
+    JobNow n;
+    n.passes = std::max(1, !a.stages.empty() ? static_cast<int>(a.stages.size()) : a.passes);
+    ComfyProgress pr;
+    if (!ComfyOwned() || !ComfyReadProgress(a.id, pr)) return n;
+    n.known = true;
+    const double finish = 0.97; // (the bar stops short of full until the file is there)
+    if (pr.steps <= 0) {
+        n.stage = "Loading the models";
+        n.frac = 0.0f;
+        return n;
+    }
+    n.perStep = pr.secPerStep;
+    n.pass = std::min(pr.barsDone, n.passes);
+    if (pr.barsDone >= n.passes) {
+        n.stage = !a.finishing.empty() ? a.finishing : "Decoding and saving";
+        n.frac = static_cast<float>(finish);
+        return n;
+    }
+    const char* unit = a.prompts > 1 && a.passes == a.prompts ? "Take " : a.label.rfind("Long video", 0) == 0 || a.label.rfind("Story", 0) == 0 ? "Part " : "Pass ";
+    n.stage = n.pass < static_cast<int>(a.stages.size()) ? a.stages[n.pass] : n.passes > 1 ? unit + std::to_string(n.pass + 1) + " of " + std::to_string(n.passes) : std::string("Generating");
+    const bool between = pr.step >= pr.steps; // (the pass before just ended: this one is starting)
+    if (between) n.step = "starting";
+    else n.step = "step " + std::to_string(pr.step + 1) + " of " + std::to_string(pr.steps);
+    const double within = between ? 0.0 : static_cast<double>(pr.step) / pr.steps;
+    n.frac = static_cast<float>((n.pass + within) / n.passes * finish);
+    if (pr.secPerStep > 0) n.left = (between ? 0.0 : pr.leftSeconds) + (n.passes - n.pass - (between ? 0 : 1)) * pr.secPerStep * pr.steps;
+    return n;
 }
 
 // Tested 2026-10-17: a 10 s 768p swap went from 72 s a step to 467 s once the PC ran out of RAM (ComfyUI held 38 GB of 64; Windows was paging the
 // model to disk) - and nothing on screen said whether it was still working. This says where it is, and why it is slow.
-void DrawComfyJobProgress(int activityId) {
+void DrawComfyJobProgress(const ComfyActivity& a) {
     static std::map<int, double> quickest; // each job's quickest step so far
-    std::string line;
+    const JobNow n = ReadJobNow(a);
+    std::string line = n.stage;
     bool slow = false;
-    ComfyProgress pr;
-    if (ComfyOwned() && ComfyReadProgress(pr) && pr.steps > 0) {
-        auto mmss = [](double s) {
-            char b[32];
-            const int t = static_cast<int>(std::lround(std::max(0.0, s)));
-            if (t >= 60) snprintf(b, sizeof(b), "%d min %02d s", t / 60, t % 60);
-            else snprintf(b, sizeof(b), "%d s", t);
-            return std::string(b);
-        };
-        double& q = quickest[activityId];
-        if (pr.secPerStep > 0 && pr.step >= 1 && (q <= 0 || pr.secPerStep < q)) q = pr.secPerStep;
-        if (pr.step >= pr.steps) line = "all " + std::to_string(pr.steps) + " steps done: decoding the video...";
-        else {
-            line = std::to_string(pr.step) + " of " + std::to_string(pr.steps) + " steps done";
-            if (pr.secPerStep > 0) line += ", " + mmss(pr.secPerStep) + " a step";
-            if (pr.leftSeconds > 0) line += ", about " + mmss(pr.leftSeconds) + " left";
-        }
-        slow = q > 0 && pr.step >= 2 && pr.secPerStep > 3.0 * q;
+    if (n.known) {
+        if (!n.step.empty()) line += ": " + n.step;
+        if (n.perStep > 0 && !n.step.empty()) line += ", " + SpanText(n.perStep) + " a step";
+        if (n.left > 0) line += ", about " + SpanText(n.left) + " left";
+        double& q = quickest[a.id];
+        if (n.perStep > 0 && (q <= 0 || n.perStep < q)) q = n.perStep;
+        slow = q > 0 && n.perStep > 3.0 * q;
         if (slow) {
             char b[96];
             snprintf(b, sizeof(b), " (its first steps took %.0f s)", q);
@@ -1124,7 +1300,7 @@ int ComfyJobTab(const std::string& label) {
         }
         return false;
     };
-    if (starts({"Video", "Long video", "Crisp", "Swap", "Star", "Story", "360", "Recreate", "Faces", "Transition", "Background"})) return 10;
+    if (starts({"Video", "Music video", "Long video", "Crisp", "Swap", "Star", "Story", "360", "Recreate", "Faces", "Transition", "Background"})) return 10;
     if (starts({"Music", "Song", "Cover"})) return 11;
     if (starts({"Drama"})) return 12;
     if (starts({"Upscale", "Edit", "MOSS", "Qwen", "App", "Cut out", "Layout", "Design"})) return 6;
@@ -1148,29 +1324,16 @@ bool DrawComfyTracker(AppState& app, float width) {
     }
     if (!run && !waiting) return false;
     const long long now = ComfyService::NowMs();
-    auto mmss = [](long long s) {
-        char b[32];
-        s = std::max(0LL, s);
-        if (s >= 3600) snprintf(b, sizeof(b), "%lld h %02lld min", s / 3600, (s / 60) % 60);
-        else if (s >= 60) snprintf(b, sizeof(b), "%lld:%02lld", s / 60, s % 60);
-        else snprintf(b, sizeof(b), "%lld s", s);
-        return std::string(b);
-    };
     std::string text;
     float frac = -1.0f; // (< 0: no steps known - a moving bar)
     if (run) {
-        ComfyProgress pr;
-        const bool steps = ComfyOwned() && ComfyReadProgress(pr) && pr.steps > 0;
+        // where it is first and its name last, so what gets cut when the bar is short is the name, not the time
+        const JobNow n = ReadJobNow(*run);
         const long long secs = (now - (run->runningMs > 0 ? run->runningMs : run->startedMs)) / 1000;
-        std::string name = run->label;
-        if (steps && pr.step >= pr.steps) text = "decoding";
-        else if (steps) {
-            text = "step " + std::to_string(std::min(pr.step + 1, pr.steps)) + "/" + std::to_string(pr.steps);
-            if (pr.leftSeconds > 0) text += ", ~" + mmss(static_cast<long long>(pr.leftSeconds)) + " left";
-            frac = static_cast<float>(pr.step) / pr.steps;
-        } else text = mmss(secs);
-        if (steps) text += " (" + mmss(secs) + ")";
-        text = name + ": " + text;
+        if (n.known) text = n.stage + (n.step.empty() ? "" : ", " + n.step) + (n.left > 0 ? " - about " + SpanText(n.left) + " left" : "") + " - " + SpanText(static_cast<double>(secs)) + " so far";
+        else text = SpanText(static_cast<double>(secs)) + " so far";
+        text += " - " + run->label;
+        frac = n.frac;
     } else {
         text = "Waiting for ComfyUI";
     }
@@ -1188,8 +1351,10 @@ bool DrawComfyTracker(AppState& app, float width) {
         const ImVec2 t0(p0.x + pad, p0.y + (size.y - ImGui::GetFontSize()) * 0.5f);
         ImGui::RenderTextEllipsis(dl, t0, ImVec2(p0.x + size.x - pad, p0.y + size.y), p0.x + size.x - pad, p0.x + size.x - pad, text.c_str(), nullptr, nullptr);
     }
-    if (hovered) ImGui::SetTooltip("%s\n\nClick: every job, with Stop and its page", text.c_str());
+    if (hovered) ImGui::SetTooltip("%s\n\nClick: every job, what it is doing, Stop and its page", text.c_str());
     if (clicked) ImGui::OpenPopup("##jobs");
+    ImGui::SetNextWindowPos(ImVec2(p0.x + size.x, p0.y - ui::Dp(6.0f)), ImGuiCond_Always, ImVec2(1.0f, 1.0f)); // (right above the bar: it used to open wherever the mouse left room for it)
+    ImGui::SetNextWindowSizeConstraints(ImVec2(ui::Dp(420.0f), 0.0f), ImVec2(ui::Dp(640.0f), ImGui::GetIO().DisplaySize.y * 0.8f));
     if (ImGui::BeginPopup("##jobs")) {
         ImGui::TextUnformatted("ComfyUI jobs");
         ImGui::Separator();
@@ -1202,8 +1367,26 @@ bool DrawComfyTracker(AppState& app, float width) {
             ImGui::SameLine();
             ImGui::TextUnformatted(a.label.c_str());
             ImGui::SameLine();
-            ImGui::TextDisabled("%s", mmss(secs).c_str());
-            if (a.state == ComfyState::Running) DrawComfyJobProgress(a.id);
+            ImGui::TextDisabled("%s", SpanText(static_cast<double>(secs)).c_str());
+            if (a.state == ComfyState::Running) {
+                const JobNow n = ReadJobNow(a);
+                if (n.frac >= 0.0f) ImGui::ProgressBar(n.frac, ImVec2(-FLT_MIN, ui::Dp(6.0f)), "");
+                DrawComfyJobProgress(a);
+                if (!a.stages.empty()) { // each part of it: done, now, still to come
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    const float h = ImGui::GetTextLineHeight();
+                    for (size_t s = 0; s < a.stages.size(); ++s) {
+                        const int at = static_cast<int>(s);
+                        const bool done = n.known && (at < n.pass), on = n.known && at == n.pass;
+                        const ImVec2 c = ImGui::GetCursorScreenPos();
+                        dl->AddCircleFilled(ImVec2(c.x + h * 0.5f, c.y + h * 0.5f), ui::Dp(4.0f), ImGui::GetColorU32(done ? ui::kGood : on ? ui::kAccentHover : ui::kTextDim));
+                        ImGui::Dummy(ImVec2(h, h));
+                        ImGui::SameLine();
+                        if (on) ImGui::TextColored(ui::kAccentHover, "%s", a.stages[s].c_str());
+                        else ImGui::TextDisabled("%s", a.stages[s].c_str());
+                    }
+                }
+            }
             if (ImGui::SmallButton(a.state == ComfyState::Running ? "Stop" : "Cancel")) app.comfySvc->Cancel(a.id);
             ImGui::SameLine();
             if (ImGui::SmallButton("Show it")) {
@@ -1660,6 +1843,39 @@ std::string FormatEditTime(double seconds) {
 
 int LastEditActivity() { return g_lastEditActivity; }
 
+// Which model edits pictures (Change anything, the Apps, the editor window): Qwen Image 2.1 Edit, or FLUX 3 Image Klein when its file is there
+// (2026-10-29: faster and closer to the words in my tests - comfy.cpp BuildFlux3Edit). Painted-area fills always use FLUX 3.
+bool Flux3EditReady() {
+    static double at = -1000.0;
+    static bool ok = false;
+    if (ImGui::GetTime() - at > 10.0) {
+        at = ImGui::GetTime();
+        const std::wstring models = ComfyModelsDir();
+        std::error_code ec;
+        ok = !models.empty() && fs::exists(fs::path(models) / L"diffusion_models" / L"flux3-image-klein-int8-convrot.safetensors", ec);
+    }
+    return ok;
+}
+
+bool DrawEditorChoice(ComfySettings& s) {
+    static const char* const kEngines[] = {"Qwen Image 2.1 Edit", "FLUX 3 Image Klein"};
+    int engine = s.editEngine == "flux3" ? 1 : 0;
+    const bool there = Flux3EditReady();
+    ImGui::SetNextItemWidth(ui::Dp(200.0f));
+    ImGui::BeginDisabled(!there && engine == 0);
+    const bool changed = ImGui::Combo("Editor##editengine", &engine, kEngines, 2);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("FLUX 3 Image Klein is the default (Qwen is used when its files are not there). Qwen Image 2.1 Edit: the one the apps' recipes\n"
+                          "were first made on, with your edit LoRAs.\n"
+                          "FLUX 3 Image Klein (Black Forest Labs): about a third faster, and closer to the words in tests (a red leather jacket where Qwen\n"
+                          "made a red raincoat); up to 10 reference pictures; no LoRAs. Its licence (FLUX Kommunity) has a revenue limit and asks you to\n"
+                          "check pictures before you publish them.%s",
+                          there ? "" : "\n(flux3-image-klein-int8-convrot.safetensors is not in ComfyUI's diffusion_models)");
+    if (changed) s.editEngine = engine == 1 ? "flux3" : "qwen";
+    return changed;
+}
+
 bool SendPictureEdit(AppState& app, const std::vector<std::wstring>& images, const std::string& instruction, const std::string& label, int times, const EditContext* ctx) {
     EnsureComfy(app);
     if (images.empty()) {
@@ -1677,7 +1893,14 @@ bool SendPictureEdit(AppState& app, const std::vector<std::wstring>& images, con
     job.times = times;
     job.canvas = ctx ? std::clamp(ctx->canvas, 0, 6) : 0;
     if (!ClefGradeRunning()) LlmStopOwned(); // ComfyUI needs the GPU: a Clef loaded for something else gives it back
-    CrashNote("edit: sending " + std::to_string(job.images.size()) + " pictures to Qwen Image 2.1 Edit");
+    if (ctx && ctx->fillMask && !ctx->mask.empty() && !ctx->grey.empty()) { // a painted area: FLUX 3 fills only there
+        job.images.resize(1);
+        job.images.push_back(ctx->grey);
+        job.images.push_back(ctx->mask);
+        job.fillMask = true;
+    }
+    const char* engine = job.fillMask || (app.comfy.editEngine == "flux3" && Flux3EditReady()) ? "FLUX 3 Image Klein" : "Qwen Image 2.1 Edit";
+    CrashNote("edit: sending " + std::to_string(job.images.size()) + " pictures to " + engine);
     const std::vector<std::wstring> sent = job.images;
     const int activity = app.comfySvc->Send(app.comfy, std::move(job));
     g_lastEditActivity = activity;
@@ -1687,7 +1910,7 @@ bool SendPictureEdit(AppState& app, const std::vector<std::wstring>& images, con
         app.requestTab = 6;
         if (EditsMode() >= 5) SetEditsMode(0); // (on the start screen or Videos: to the edits list, where it shows)
     }
-    app.SetStatus("Sent \"" + label + "\" to ComfyUI for editing (Qwen Image 2.1 Edit): see it in the Edits tab");
+    app.SetStatus("Sent \"" + label + "\" to ComfyUI for editing (" + engine + "): see it in the Edits tab");
     return true;
 }
 
@@ -1983,6 +2206,7 @@ void DrawPictureEditor(AppState& app) {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
             ImGui::SetTooltip("To edit one picture, keep \"Edit the first picture\". To put several characters together in ONE scene, pick a new canvas: the pictures only\n"
                               "show who they are, and the result is not tied to the frame of the first one (no side-by-side or blended look).");
+        if (DrawEditorChoice(app.comfy)) SaveComfySettings(app.comfy);
     }
     {   // quality versus time: a slider with notches, each showing how long it takes on THIS computer
         ComfySettings& cs = app.comfy;
@@ -2078,5 +2302,5 @@ void DrawPictureEditor(AppState& app) {
 }
 
 void PumpComfyResults(AppState& app) {
-    if (app.activeTab != 4 && g_resPlayer && g_resPlayer->Playing()) g_resPlayer->Pause(); // its sound stops when you leave the ComfyUI tab
+    if (!app.TabShown(4) && !app.TabShown(6) && g_resPlayer && g_resPlayer->Playing()) g_resPlayer->Pause(); // its sound stops when you leave the ComfyUI tab
 }

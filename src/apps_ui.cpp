@@ -52,7 +52,7 @@ struct App {
     bool shots = false;
 };
 
-const char* kCategories[] = {"All", "Enhance & style", "Professional", "Face & identity", "Ads & products", "Games & characters", "Extras"};
+const char* kCategories[] = {"All", "Enhance & style", "Professional", "Face & identity", "Ads & products", "Games & characters", "Fun & retro", "Extras"};
 
 const App kApps[] = {
     // ---- enhance and style
@@ -73,6 +73,12 @@ const App kApps[] = {
      "Give the person {X}. Keep their face, identity, clothes, pose and the background the same.", nullptr, "Hair and makeup"},
     {"Colorize", "Enhance & style", "A black and white photo in natural colour",
      "Colorize this black and white photo with natural, realistic colours: skin, clothes, sky and surroundings as they would really be; keep every detail the same."},
+    // (2026-10-29, after NVAI-open's photo restoration; theirs is FLUX 3: here the same edit as every app)
+    {"Repair an old photo", "Enhance & style", "Scratches, dust, creases, stains and torn corners taken out",
+     "Restore this old, damaged photograph: remove every scratch, speck of dust, crease, crack, water stain and fold, and fill in the torn or "
+     "missing corner so it matches the rest of the picture. Keep the photograph itself exactly the same - the people, their faces, expressions "
+     "and age, the clothes, the composition, the grain and the light - {X}.",
+     "Keep its tones=and keep its own tones (a black and white or sepia photo stays as it is)|And colorize=and give it natural, realistic colours as they would really have been"},
     // ---- professional
     {"Expand", "Professional", "More of the scene around it, in a new shape",
      "Show more of the scene around the first picture: extend it naturally beyond its edges in the same style, light and perspective, keeping everything already in it exactly the same.",
@@ -127,6 +133,85 @@ const App kApps[] = {
     {"Day to night", "Extras", "The same place at another time",
      "Show the same scene {X}, with the light, sky and colours that go with it. Keep everything in it the same.",
      "At night=at night with lights on|At sunset=at sunset|In winter=in winter with snow|In autumn=in autumn with orange leaves|In the rain=in heavy rain with wet reflections"},
+    // ---- from Freefield's template apps (neuregex/freefield, MIT; 2026-10-28), their prompts worded for Qwen Image 2.1 Edit
+    {"Color grade", "Enhance & style", "A film colour grade: teal and orange, noir, pastel...",
+     "Colour grade this photo with {X}; keep every detail and the composition.",
+     "Teal and orange=a strong teal and orange cinematic grade, shadows pushed to deep teal, skin tones and highlights warm orange, high contrast, slightly lifted blacks, fine film grain, like a blockbuster movie still|Warm vintage film=a warm vintage film grade, golden-brown midtones, faded blacks, soft contrast, a slight green in the shadows and fine grain|Cold noir=a cold noir grade, heavily desaturated, blue-black shadows, pale cool skin, crushed blacks, hard contrast, a faint cyan tint in the highlights|Pastel=a soft pastel grade, low contrast, lifted shadows, pale pink, mint and lavender tints, bright airy highlights|High-contrast B&W=a high-contrast black and white grade, no colour at all, deep blacks, bright whites, strong local contrast and visible grain|Golden hour=a golden hour grade, warm amber light over everything, warm highlights on the skin, a soft orange glow, gentle contrast"},
+    {"Photo effects", "Enhance & style", "Glitch, double exposure, neon outline, infrared, thermal...",
+     "Apply {X} to this photo; the scene stays recognizable.",
+     "Glitch=a heavy digital glitch effect: strong horizontal displacement bands, red and cyan RGB channel split, blocky pixel corruption, scan lines and data-mosh smears across the frame|Double exposure=a double exposure: the silhouette of the main subject filled with a pine forest and mountains at dusk, the background faded to white, a soft fine-art blend|Neon outline=glowing neon outlines: bright pink and cyan neon tubes trace the edges of the subject and the main shapes, the rest of the photo darkened to near black|Pencil sketch=a graphite pencil sketch look: the whole photo redrawn as a detailed pencil drawing on white paper, hatching for the shadows, no colour|Watercolour=a watercolour painting look: soft washes of colour bleeding into each other, visible paper texture, loose brush edges, white paper showing through|Pop art=a pop art look: bold flat colours, thick black outlines and halftone dots, like a 1960s comic print|Vintage film=a vintage 1970s film photo look: faded warm colours, lifted blacks, heavy film grain, light leaks and a slight blur|Infrared=an infrared photo look: foliage and skin turned pale white and pink, dark skies, high contrast, a dreamy glow|Anaglyph 3D=a red-cyan anaglyph 3D look: the image doubled, a red copy shifted left and a cyan copy shifted right, like an old 3D-glasses print|Thermal camera=a thermal camera look: false colours from deep blue for cold to yellow and white for warm, people glowing orange and yellow, no fine texture"},
+    {"Burning sunset", "Enhance & style", "The same scene under a blazing sunset sky",
+     "The scene of the picture under a blazing sunset: the sky on fire with orange and crimson clouds, long shadows, warm light on everything, composition unchanged."},
+    {"3D render", "Enhance & style", "The person as a 3D animated-film character",
+     "Turn this photo into a stylized 3D character render like a still from a modern animated film: the same person as a 3D cartoon character with smooth skin, large expressive eyes, exaggerated proportions, matte clay-like materials, soft studio lighting with subsurface scattering, clean gradient background; the same hairstyle and clothes."},
+    {"Sketch to photo", "Enhance & style", "A sketch or drawing turned into a real photo",
+     "Turn the sketch in the picture into a photorealistic photograph of the same scene: the same composition and subjects, real materials, natural light."},
+    {"Packshot", "Professional", "The closing shot of an ad: the product on a clean gradient",
+     "The closing packshot of a commercial: the product from the picture centered on a smooth {X} gradient background, a soft shadow under it, generous empty space above it. Keep the product identical: shape, label, text and colours.",
+     "Dark charcoal=dark charcoal|Clean white=clean white|Deep blue=deep blue|Warm beige=warm beige"},
+    {"Macro detail", "Professional", "An extreme macro close-up of the product's texture",
+     "An extreme macro photograph of a detail of the product from the picture: its texture, edges and label fill the frame, 100mm macro lens, soft diffused light. Keep the product identical: shape, label, text and colours."},
+    {"Macro scene", "Professional", "The product in a macro scene: wet stone, leaves, sand, frost",
+     "An extreme macro close-up of the product from the picture {X}, shallow depth of field, tiny water droplets, crisp texture. Keep the product identical: shape, label, text and colours.",
+     "Wet black stone=on wet black stone with mist|Green leaves=among fresh green leaves|Sand at golden hour=on sand at golden hour|Ice and frost=on ice with frost crystals"},
+    {"Phone snapshot", "Professional", "A casual UGC phone shot: a hand holding the product",
+     "Add a hand holding this product from below and replace the background with {X}, as a casual phone snapshot with slightly tilted framing and natural light. The product itself does not change: the same angle, the same size, and the label text stays sharp and perfectly legible, exactly as written in the photo.",
+     "Bright kitchen=a bright kitchen|Cafe table=a busy cafe|Outdoors in a park=a sunny park"},
+    {"Knolling", "Professional", "The subject taken apart and laid out neatly, top-down",
+     "The subject of the picture taken apart into its components, laid out neatly on a grid with small labels, knolling photography, top-down, white background."},
+    {"Fashion catalog", "Professional", "The person wearing the garment from a second picture",
+     "A fashion catalog photo: the person from the first picture wearing the garment from the second picture, full-length, {X}. Keep the face identical and the garment's cut, colour and pattern exactly as in its photo.",
+     "Studio cyclorama=in a white studio cyclorama|City street, golden hour=on a city street at golden hour|Minimalist loft=in a minimalist loft|Runway=walking a runway under spotlights", nullptr, true},
+    {"Face swap", "Face & identity", "The face from a second picture on this person",
+     "Give the person in the first picture exactly the face of the person in the second picture: the same eyes, nose, mouth, brows and face shape. Keep the first picture's own hairline and hair; match its head angle, expression, lighting and skin tone.",
+     nullptr, nullptr, true},
+    {"Commercial faces", "Face & identity", "The person in a campaign shot: sportswear, skincare, corporate",
+     "Turn this photo into {X} Keep the face identical. No text, letters or logos anywhere in the image.",
+     "Sportswear=a sportswear campaign shot: the same person in a black athletic top, a light sheen of sweat, dramatic low-key lighting with a rim light, dark concrete gym background, intense look at the camera, editorial composition.|Skincare advert=a skincare advertisement: the same person in a soft white top with glowing dewy skin, holding a small white jar of face cream near the cheek, bright white studio with soft beauty-dish lighting, clean pastel backdrop, glossy magazine composition.|Corporate brochure=a corporate brochure portrait: the same person in a tailored navy suit, standing in a bright glass office with a blurred city view behind, soft window light, confident friendly expression, crisp professional photography.|Fashion editorial=a fashion editorial shot: the same person in a structured designer coat, dramatic side light carving the face, a seamless coloured paper backdrop, a strong pose, high-end magazine photography."},
+    {"Renaissance", "Face & identity", "The person as a Renaissance oil painting in a gilded frame",
+     "The person from the picture as a Renaissance oil painting: chiaroscuro light, period clothing, cracked varnish, in an ornate gilded frame on a museum wall. Keep the face, hairstyle and build identical."},
+    {"Fridge ad", "Ads & products", "The product in a lit glass-door shop fridge",
+     "The product from the picture standing inside an illuminated glass-door display fridge in a shop, cold light, condensation on the glass, rows of shelves. Keep the product identical: shape, label, text and colours."},
+    {"Giant product", "Ads & products", "The product as a giant monument over a city",
+     "The product from the picture as a giant monument standing over a city skyline {X}, people and cars tiny at its base, wide-angle shot, realistic scale and lighting. Keep the product identical: shape, label, text and colours.",
+     "Sunset=at sunset|Night, city lights=at night with the city lights on|Foggy morning=on a foggy morning"},
+    {"Graffiti ad", "Ads & products", "The product as a spray-paint mural on a brick wall",
+     "The product from the picture painted as a large spray-paint graffiti mural on a brick wall in the street, paint drips and stencil edges, daylight. Keep its shape, label and colours recognizable."},
+    {"Ad poster", "Ads & products", "A printed ad poster for the product, with your headline",
+     "A printed advertising poster for the product from the picture: the product large in the center, a bold headline reading \"{X}\" at the top, a clean typographic layout, studio lighting, vivid colours. Keep the product identical: shape, label, text and colours.",
+     nullptr, "The headline"},
+    {"Outfit vending", "Ads & products", "The clothes worn in the picture inside a neon vending machine",
+     "The clothes and accessories worn in the picture displayed as separate items inside an illuminated glass vending machine at night, each in its own slot with a price tag, neon glow."},
+    {"Comic book", "Fun & retro", "A comic book panel: ink, halftone, a caption box",
+     "The photo as a comic book panel: bold ink outlines, halftone dots, flat colours, an action caption box, dynamic framing."},
+    {"60s cafe", "Fun & retro", "The person in a 1960s cafe, Kodachrome look",
+     "The person from the picture sitting in a 1960s cafe: period clothes and hairstyle, chrome counter, pastel colours, Kodachrome film grain, warm light. Keep the face, hairstyle and build identical."},
+    {"Giallo", "Fun & retro", "A 1970s Italian giallo film still, red and blue gels",
+     "The person from the picture in a 1970s Italian giallo film still: saturated red and blue gel lighting, deep shadows, a gloved hand at the edge of the frame, film grain. No blood, no wounds. Keep the face, hairstyle and build identical."},
+    {"Japanese magazine", "Fun & retro", "The person on a Japanese fashion magazine cover",
+     "The person from the picture on the cover of a Japanese fashion magazine: bold vertical Japanese headlines, a masthead at the top, colourful text blocks, glossy print look. Keep the face, hairstyle and build identical."},
+    {"Japanese poster", "Fun & retro", "A bold red and black Japanese-style poster",
+     "A Japanese-style poster featuring the person from the picture: bold red and black graphic design, vertical typography, rising-sun rays, print texture. Keep the face, hairstyle and build identical."},
+    {"Japanese TV show", "Fun & retro", "The person on a retro Japanese variety show",
+     "The person from the picture on a retro Japanese TV variety show: a 4-panel screen layout, bright studio set, colourful caption text overlays, 1990s broadcast look. Keep the face, hairstyle and build identical."},
+    {"90s paint program", "Fun & retro", "Redrawn as a crude 1990s computer paint drawing",
+     "The photo redrawn as a crude drawing made in a 1990s computer paint program: aliased lines, flat fill colours, a spray-can texture, a white canvas with the program's toolbar at the edge."},
+    {"Pixel game", "Fun & retro", "The scene as 16-bit pixel art with a game HUD",
+     "The scene of the picture redrawn as 16-bit pixel art from a retro video game, limited palette, visible pixels, a side-view game HUD at the top."},
+    {"Street mural", "Fun & retro", "The person hand-painted on a building's wall",
+     "The person from the picture hand-painted on a large street mural on the side of a building, visible brush strokes, weathered paint, pedestrians passing below."},
+    {"Playing card", "Fun & retro", "The person as the queen of hearts on casino felt",
+     "Make one large ornate playing card, the queen of hearts, lying on green casino felt next to a stack of poker chips. The card's portrait is this person's face, large and clearly recognizable, drawn in the classic playing-card illustration style with gold foil borders and the Q and heart symbols in the corners."},
+    {"Micro beasts", "Fun & retro", "Tiny cute animals climbing on the person",
+     "The person from the picture surrounded by tiny cute animals: {X} climbing on their shoulders and hands, sharp detail, soft daylight. Keep the face, hairstyle and build identical.",
+     "Hamsters and kittens=hamsters and kittens|Ducklings and bunnies=ducklings and bunnies|Tiny puppies=tiny puppies|Baby otters=baby otters"},
+    {"Mascot", "Fun & retro", "The person in a football club mascot costume",
+     "The person from the picture in a full football club mascot costume: an oversized foam head of a {X} held under one arm, team colours, standing on a stadium pitch, the crowd behind. The kit is a plain unbranded club kit with only a simple club crest: no sportswear brand logos, stripes or marks. Keep the face, hairstyle and build identical.",
+     "Lion=lion|Eagle=eagle|Bulldog=bulldog|Bear=bear"},
+    {"Brick toy", "Games & characters", "The subject rebuilt from plastic toy bricks",
+     "The subject of the picture rebuilt as a toy made of interlocking plastic bricks, blocky shapes, studs visible, on a white table."},
+    {"Glitter sticker", "Games & characters", "A cute holographic glitter sticker of the person",
+     "The person from the picture as a glossy glitter sticker: a simplified cute illustration, sparkling holographic texture, a thick white die-cut border, on a plain white background."},
 };
 constexpr int kAppCount = static_cast<int>(sizeof(kApps) / sizeof(kApps[0]));
 
@@ -248,6 +333,14 @@ void Slot(AppState& app, const char* label, std::wstring& path, const char* id) 
     const float s = ui::Dp(150.0f);
     const ImVec2 p = ImGui::GetCursorScreenPos();
     Picture(app, path, s, s * 1.2f, "##pic");
+    if (ImGui::BeginDragDropTarget()) { // (a picture dragged here from the gallery or the Vision library)
+        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("MV_LIBITEM")) path = static_cast<const wchar_t*>(pl->Data);
+        else if (const ImGuiPayload* pg = ImGui::AcceptDragDropPayload("MV_IMAGES")) {
+            const int idx = *static_cast<const int*>(pg->Data);
+            if (idx >= 0 && idx < static_cast<int>(app.entries.size())) path = app.entries[idx].path;
+        }
+        ImGui::EndDragDropTarget();
+    }
     if (path.empty()) {
         const char* t = "none yet";
         const ImVec2 ts = ImGui::CalcTextSize(t);
@@ -331,7 +424,7 @@ void DrawAppsBody(AppState& app, float height) {
     // ---- the cards
     ImGui::TableSetColumnIndex(0);
     ImGui::BeginChild("##appcards", ImVec2(0, height));
-    for (int c = 0; c < 7; ++c) {
+    for (int c = 0; c < IM_ARRAYSIZE(kCategories); ++c) {
         if (c) ui::SameLineIfFits(kCategories[c]);
         ImGui::PushStyleColor(ImGuiCol_Button, g_a.category == c ? ui::ChipActiveColor() : ui::ChipColor());
         if (ImGui::SmallButton(kCategories[c])) g_a.category = c;
@@ -352,8 +445,14 @@ void DrawAppsBody(AppState& app, float height) {
         const bool click = Picture(app, last != g_a.lastMade.end() ? last->second : std::wstring(), cw, ch, "##card");
         ImDrawList* dl = ImGui::GetWindowDrawList();
         if (last == g_a.lastMade.end()) { // none made yet: its name and what it does, in the box
-            dl->AddText(ui::TitleFont(), ui::TitleFont()->FontSize, ImVec2(p.x + ui::Dp(10.0f), p.y + ui::Dp(10.0f)), ImGui::GetColorU32(ImGuiCol_Text), a.name, nullptr, cw - ui::Dp(20.0f));
-            dl->AddText(nullptr, 0.0f, ImVec2(p.x + ui::Dp(10.0f), p.y + ch * 0.45f), ImGui::GetColorU32(ImGuiCol_TextDisabled), a.about, nullptr, cw - ui::Dp(20.0f));
+            // (the name at a size that fits in two lines, the words under wherever it ends: a two-line name ran into them)
+            ImFont* tf = ui::TitleFont();
+            float fs = tf->FontSize;
+            while (fs > ImGui::GetFontSize() * 1.15f && tf->CalcTextSizeA(fs, FLT_MAX, cw - ui::Dp(20.0f), a.name).y > fs * 2.3f) fs -= 1.0f;
+            const float nameH = tf->CalcTextSizeA(fs, FLT_MAX, cw - ui::Dp(20.0f), a.name).y;
+            dl->AddText(tf, fs, ImVec2(p.x + ui::Dp(10.0f), p.y + ui::Dp(10.0f)), ImGui::GetColorU32(ImGuiCol_Text), a.name, nullptr, cw - ui::Dp(20.0f));
+            dl->AddText(nullptr, 0.0f, ImVec2(p.x + ui::Dp(10.0f), p.y + std::max(ch * 0.40f, ui::Dp(16.0f) + nameH)), ImGui::GetColorU32(ImGuiCol_TextDisabled), a.about, nullptr,
+                        cw - ui::Dp(20.0f));
         } else { // its name over the picture
             const ImVec2 ts = ImGui::CalcTextSize(a.name);
             dl->AddRectFilled(ImVec2(p.x, p.y + ch - ts.y - ui::Dp(10.0f)), ImVec2(p.x + cw, p.y + ch), IM_COL32(0, 0, 0, 160), ui::Dp(6.0f), ImDrawFlags_RoundCornersBottom);
@@ -416,7 +515,7 @@ void DrawAppsBody(AppState& app, float height) {
     if (ui::PrimaryButton(go, ImVec2(ui::Dp(170.0f), ui::Dp(36.0f)))) Make(app, a);
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::TextDisabled("Qwen Image 2.1 Edit, about %s each", FormatEditTime(EstimateEditSeconds(app.comfy.editSteps, app.comfy.editResolution, a.twoPictures ? 2 : 1, 0)).c_str());
+    ImGui::TextDisabled("%s, about %s each", app.comfy.editEngine == "flux3" && Flux3EditReady() ? "FLUX 3 Image Klein" : "Qwen Image 2.1 Edit", FormatEditTime(EstimateEditSeconds(app.comfy.editSteps, app.comfy.editResolution, a.twoPictures ? 2 : 1, 0)).c_str());
     if (!ready) ImGui::TextDisabled(g_a.first.empty() ? "Pick the picture first." : a.twoPictures && g_a.second.empty() ? "Pick the second picture too." : "Say it in a few words first.");
     const int making = static_cast<int>(std::count_if(g_a.waiting.begin(), g_a.waiting.end(), [&](const auto& w) { return w.second == a.name; }));
     if (making) ImGui::TextColored(ui::kAccent, "Making %d...", making);
@@ -444,4 +543,11 @@ void DrawAppsBody(AppState& app, float height) {
     }
     ImGui::EndChild();
     ImGui::EndTable();
+}
+
+bool AppsTakePictures(const std::vector<std::wstring>& paths) { // (dropped on the page: the first picture, a second for two-picture apps)
+    if (paths.empty()) return false;
+    g_a.first = paths[0];
+    if (paths.size() > 1) g_a.second = paths[1];
+    return true;
 }

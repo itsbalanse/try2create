@@ -20,6 +20,9 @@ std::wstring WhisperModelDir();                                      // where it
 std::string AddLyricsToSong(const std::wstring& song, const std::string& lyrics, const std::string& title);
 std::string LyricsFromSongFile(const std::wstring& song);            // the lyrics ComfyUI saved in the song's workflow ("" = none)
 std::vector<TimedLyric> ReadSrt(const std::wstring& srt);
+// Any song's words from listening alone, when there are no lyrics to match them to: whisper's own timed lines into outSrt. Blocks (a worker
+// thread; about a minute for a 3-minute song). "" = done, else why not.
+std::string HearSongLyrics(const std::wstring& song, const std::wstring& outSrt);
 std::wstring SrtPathOf(const std::wstring& song);                    // song.srt (exists once timed)
 // A rewritten song (tmp) in place of the song: tried for up to 10 s while a player still has it open; the tmp is removed when it cannot be done
 bool ReplaceSongFile(const std::wstring& tmp, const std::wstring& song);

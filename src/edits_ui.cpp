@@ -481,7 +481,7 @@ std::string EditsTabLabel(AppState& app) {
 }
 
 void SetEditsMode(int mode) {
-    g_editsMode = std::clamp(mode, 0, 6); // (was clamped to 0-3: "Apps (one click)" - mode 4 - turned into Upscale, so its button did nothing)
+    g_editsMode = std::clamp(mode, 0, 8); // (was clamped to 0-3: "Apps (one click)" - mode 4 - turned into Upscale, so its button did nothing)
     ShowLayoutStudio(g_editsMode == 1);
 }
 int EditsMode() { return g_editsMode; }
@@ -502,6 +502,7 @@ void DrawEditsHome(AppState& app, float height) {
     };
     static const Card kCards[] = {
         {4, "One-click apps", "Pick a recipe and a picture: nothing to write.", {"Relight it", "A new camera angle", "Turn it into a plushie", "A product shot"}},
+        {8, "People & outfits", "Swap someone into a picture, dress them, pose them, put two together.", {"Swap him into the photo", "Dress her in this outfit", "Pose them like the drawing", "Two characters together"}},
         {0, "Change anything", "Say what to change; the picture is redrawn around it.", {"\"make it night\"", "\"put her in a red dress\"", "\"remove the car\"", "\"in the style of anime\""}},
         {1, "Designs & exact text", "Posters, covers and thumbnails with the exact words; or redo just what is inside a box.", {"A movie poster", "A YouTube thumbnail", "Recolour the jacket", "Swap the sign's words"}},
         {2, "Text over a picture", "Real text layers over your picture (a layered .psd).", {"A meme", "Captions", "Speech bubbles", "A title card"}},
@@ -563,7 +564,7 @@ void DrawEditsHome(AppState& app, float height) {
 void DrawEditsTab(AppState& app, float height) {
     static bool testMode = [] { // tests: MV_EDITS_MODE=n opens that mode once
         char buf[8] = {};
-        if (GetEnvironmentVariableA("MV_EDITS_MODE", buf, sizeof(buf))) g_editsMode = std::clamp(atoi(buf), 0, 6);
+        if (GetEnvironmentVariableA("MV_EDITS_MODE", buf, sizeof(buf))) g_editsMode = std::clamp(atoi(buf), 0, 8);
         return true;
     }();
     (void)testMode;
@@ -573,7 +574,7 @@ void DrawEditsTab(AppState& app, float height) {
       // (text and graphics over a picture), upscale (bigger, better faces)
         const float y0 = ImGui::GetCursorPosY();
         static const char* kModes[] = {"Change anything", "Designs & exact text", "Text over a picture", "Upscale a picture", "One-click apps", "Videos",
-                                       "All edits"};
+                                       "All edits", "Paint and fill", "People & outfits"};
         static const char* kTips[] = {
             "Say what to change: Qwen Image 2.1 Edit redraws the picture (best for anything a body does, a new background, a new style; ~30 s)",
             "Boxes: designs with exact words (covers, posters, thumbnails), or a quick edit of what is inside a box on any picture - recolour, remove, "
@@ -582,9 +583,11 @@ void DrawEditsTab(AppState& app, float height) {
             "Bigger pictures, better faces",
             "Ready-made recipes: relight, a new angle, expand, outfit swap, headshot, plushie, product shot... pick one, pick the picture, Make it",
             "Make a video crisp (MiniMax H3 redraws its detail at 1080p or 2K) or upscale it quickly",
-            "Every kind of edit, with examples"};
-        static const int kOrder[] = {6, 4, 0, 1, 2, 3, 5}; // (the start screen, then Apps)
-        for (int k = 0; k < 7; ++k) {
+            "Every kind of edit, with examples",
+            "Paint over what should change and say what goes there (or nothing: it is taken out) - only the painted area is redrawn (FLUX 3, ~20 s)",
+            "Put people into pictures: swap someone in, dress them in an outfit, pose them like a drawing, put two characters together"};
+        static const int kOrder[] = {6, 4, 0, 8, 7, 1, 2, 3, 5}; // (the start screen, then Apps)
+        for (int k = 0; k < 9; ++k) {
             const int m = kOrder[k];
             if (k) ImGui::SameLine();
             const bool on = g_editsMode == m;
@@ -618,16 +621,30 @@ void DrawEditsTab(AppState& app, float height) {
             DrawAppsBody(app, height);
             return;
         }
+        if (g_editsMode == 7) {
+            DrawPaintFillBody(app, height);
+            return;
+        }
+        if (g_editsMode == 8) {
+            DrawMakerColumns(app, height, "##peoplepage", DrawPeopleComposer);
+            return;
+        }
     }
-    if (!ImGui::BeginTable("edits_layout", 3, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings, ImVec2(0, height))) return;
-    ImGui::TableSetupColumn("List", ImGuiTableColumnFlags_WidthStretch, 0.18f);
+    static bool foldList = false; // (the list folds to a strip: the round "-" in its corner)
+    if (!ImGui::BeginTable(foldList ? "edits_layout_f" : "edits_layout", 3, ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings, ImVec2(0, height))) return;
+    if (foldList) ImGui::TableSetupColumn("List", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, ui::Dp(28.0f));
+    else ImGui::TableSetupColumn("List", ImGuiTableColumnFlags_WidthStretch, 0.18f);
     ImGui::TableSetupColumn("Picture", ImGuiTableColumnFlags_WidthStretch, 0.46f);
     ImGui::TableSetupColumn("Details", ImGuiTableColumnFlags_WidthStretch, 0.36f);
     ImGui::TableNextRow(0, height);
 
     // ---- the list, newest first
     ImGui::TableSetColumnIndex(0);
+    if (foldList) {
+        if (ui::FoldStrip("##stripedits", "All edits", ui::Dp(28.0f), height)) foldList = false;
+    } else {
     ImGui::BeginChild("edits_list", ImVec2(0, height), true);
+    if (ui::FoldButton("##foldedits", "Fold the list away")) foldList = true;
     if (const int cleanup = DrawListCleanup("editsclean", !g_edits.empty())) {
         const size_t before = g_edits.size();
         g_edits.erase(std::remove_if(g_edits.begin(), g_edits.end(), [&](EditRecord& r) {
@@ -681,6 +698,7 @@ void DrawEditsTab(AppState& app, float height) {
         SaveEdits();
     }
     ImGui::EndChild();
+    } // (the list)
 
     EditRecord* rec = Find(g_sel);
     if (!rec && !g_edits.empty()) rec = &g_edits.back();

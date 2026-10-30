@@ -15,10 +15,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $commit = '67e4eb5541b648555563144401ebaba832bd73ec'
 $comfy = Join-Path $Install 'ComfyUI'
+if (Test-Path (Join-Path $Install 'main.py')) { $comfy = $Install } # (a git clone: main.py in the folder itself)
 if (-not $Nodes) { $Nodes = Join-Path $comfy 'custom_nodes' }
 if (-not $Predictors) { $Predictors = Join-Path $comfy 'models\veda' }
 $python = Join-Path $comfy '.venv\Scripts\python.exe'
 if (-not (Test-Path $python)) { $python = Join-Path $Install 'standalone-env\python.exe' }
+foreach ($p in 'python_embeded\python.exe', 'python_embedded\python.exe', 'ComfyUI\venv\Scripts\python.exe', 'venv\Scripts\python.exe', '.venv\Scripts\python.exe') { if (-not (Test-Path $python)) { $python = Join-Path $Install $p } } # (a portable ComfyUI, a git clone)
 $uv = Join-Path $Install 'standalone-env\uv.exe'
 
 function Say($text) {

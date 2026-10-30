@@ -78,6 +78,7 @@ struct ImageEntry {
     bool missing = false;     // the file was deleted/moved away while the folder was open
     unsigned long long arrivedTick = 0; // GetTickCount64() when it appeared while the folder was open (a "NEW" badge until it is looked at); 0 = was there already
     int visionMask = 0;       // already described with Vision: bit 1 image prompt, 2 tags, 4 video scene
+    int helper = 0;           // a helper picture, not a result (HelperKind: depth map, mask, pose): the gallery hides these
 };
 
 // The score used for badges/sorting/filtering: Combined takes the higher of
@@ -385,8 +386,15 @@ public:
     bool comfyLoaded = false;
     std::unique_ptr<ComfyService> comfySvc;
     ID3D11Device* Device() const { return device_; }
-    int activeTab = 0;             // 0 gallery, 1 Vision library, 2 Workflows, 3 Vision board, 4 ComfyUI (set while drawing)
-    int requestTab = -1;           // set to switch tabs from anywhere
+    int activeTab = 0;             // 0 gallery, 1 Vision library, 2 Workflows, 3 Vision board, 4 ComfyUI (set while drawing) - the focused page
+    int requestTab = -1;           // set to switch tabs from anywhere (with tiling on: it opens beside the page you are on)
+    bool requestAlone = false;     // ...and with this, it takes the whole width instead
+    // Tiling (like Hyprland): up to two pages side by side - opening another page splits the screen; tiles[1] = -1 when one page fills it
+    bool tilePages = true;         // (persisted)
+    int tiles[2] = {0, -1};
+    bool tilePinned[2] = {false, false}; // a pinned tile is never replaced by a page you open
+    bool tileMin[2] = {false, false};    // a minimised tile: a thin strip at its side (the other page gets the room)
+    bool TabShown(int t) const { return tiles[0] == t || tiles[1] == t; }
 
     // What the gallery leaves out (persisted): the Vision output folder, and extra copies of
     // the same image. HiddenCopies() is how many copies the last folder load dropped.
@@ -513,6 +521,18 @@ public:
     unsigned filterEpoch = 0;      // bumped whenever entries/scores change, so the gallery knows to re-filter
     int galleryColumns = 1;        // columns in the gallery grid, for Up/Down navigation
     bool scrollToSelected = false; // gallery should bring the selected cell into view
+    bool gridToTop = false;        // the gallery goes back to its top
+    // Where you were in the gallery before a jump (a picture opened from another page, Top): the Back button goes there again
+    struct GalleryPlace {
+        std::wstring folder, path;
+        float scrollY = 0.0f;
+    };
+    std::vector<GalleryPlace> galleryBack;
+    float gridScrollNow = 0.0f;    // how far down the gallery is
+    int gridFindFrames = 0;        // a jump to a picture: the gallery centres it, for these frames (a gallery just opened has no size yet)
+    float gridScrollTo = -1.0f;    // goes there on the next frame
+    void GalleryRemember();
+    void GalleryGoBack();
     std::vector<std::string> recentFolders; // UTF-8, most recent first
 
     // Last window position/size (restored at startup), written by main().
@@ -535,8 +555,10 @@ public:
     float visionLibBoxSize = 130.0f;
     bool showFolderPane = false;    // gallery: the folder tree to the left (persisted)
     bool navCollapsed = false;      // the page sidebar shows only its icons (persisted)
+    bool galleryHideViewer = false, galleryHideInfo = false; // the gallery's viewer / prompt-and-info panes folded to strips (persisted)
     bool showUnreadable = false;    // gallery: also list files that could not be read as pictures
     int hiddenUnreadable = 0;       // how many the current view leaves out (set while filtering)
+    int hiddenHelpers = 0;          // depth maps, masks and poses left out (set while filtering)
     int metadataMode = 1;           // gallery: 0 all images, 1 only with generation metadata, 2 only WITHOUT metadata
     float visionLibImageFrac = 0.42f; // Vision library: share of the reader the picture takes (the rest is the prompt text)
     bool visionLibSideBySide = false; // Vision library: picture beside the text instead of above it
@@ -577,8 +599,10 @@ public:
 
     // View options (persisted)
     bool scanSubfolders = true;     // include subfolders when opening a folder
+    bool showHelpers = false;       // depth maps, masks and poses show in the gallery too
     bool showGroupHeaders = true;   // section headers in the gallery for the current sort
     bool lightTheme = false;
+    int accent = 0; // the accent colour (ui::AccentName: Violet, Blue, Teal...)
     float uiScaleMul = 1.0f;        // user UI scale on top of the monitor's DPI scale
 
     // Search extras
@@ -657,6 +681,7 @@ public:
     std::unordered_map<std::wstring, int> nsfwMarks_; // (lower case)
     bool nsfwMarksLoaded_ = false;
     bool ShouldBlur(const std::wstring& path);
+    void NoteFileDeleted(const std::wstring& path); // deleted from elsewhere in the app: the gallery lets go of it
     bool ShouldBlur(const ImageEntry& e);
     // What to draw for a picture's texture: itself, or (blurred) its soft copy - null while that is being made
     ID3D11ShaderResourceView* ShownSrv(ID3D11ShaderResourceView* srv, bool blur);
@@ -712,6 +737,7 @@ private:
         size_t index = 0;
         ID3D11ShaderResourceView* srv = nullptr;
         int w = 0, h = 0;
+        int helper = 0; // (HelperPixels of its thumbnail)
         ImageMetadata metadata;
         std::string searchTextLower;
     };
@@ -723,6 +749,7 @@ private:
     struct CachedThumb {
         ID3D11ShaderResourceView* srv = nullptr;
         int w = 0, h = 0;
+        int helper = 0;
         ImageMetadata metadata;
         std::string searchTextLower;
         std::filesystem::file_time_type mtime{};

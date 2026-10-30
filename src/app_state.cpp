@@ -1,4 +1,5 @@
 #include "app_state.h"
+#include "image_attributes.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -458,6 +459,7 @@ void AppState::ProcessFile(size_t index, const std::wstring& path, fs::file_time
                 result.srv = found->second.srv;
                 result.w = found->second.w;
                 result.h = found->second.h;
+                result.helper = found->second.helper;
                 result.metadata = found->second.metadata;
                 result.searchTextLower = found->second.searchTextLower;
                 cacheHit = true;
@@ -481,19 +483,20 @@ void AppState::ProcessFile(size_t index, const std::wstring& path, fs::file_time
             }
 
             ID3D11ShaderResourceView* srv = nullptr;
-            int w = 0, h = 0;
+            int w = 0, h = 0, helper = 0;
             ImageMetadata metadata;
             std::string searchText;
 
             if (diskHit) {
-                std::vector<unsigned char> thumbBytes;
+                std::vector<unsigned char> thumbBytes, thumbRGBA;
                 LoadedImage thumb;
                 std::string err;
                 if (diskCache_.ReadThumbBytes(diskRec, thumbBytes) &&
-                    LoadImageTextureFromMemory(device_, thumbBytes.data(), thumbBytes.size(), thumb, &err)) {
+                    LoadImageTextureFromMemory(device_, thumbBytes.data(), thumbBytes.size(), thumb, &err, &thumbRGBA)) {
                     srv = thumb.srv;
                     w = thumb.width;
                     h = thumb.height;
+                    helper = HelperPixels(thumbRGBA.data(), w, h);
                     metadata = std::move(diskRec.metadata);
                     searchText = std::move(diskRec.searchTextLower);
                     SlimMetadata(metadata);
@@ -510,6 +513,7 @@ void AppState::ProcessFile(size_t index, const std::wstring& path, fs::file_time
                     srv = thumb.srv;
                     w = thumb.width;
                     h = thumb.height;
+                    helper = HelperPixels(rawRGBA.data(), w, h);
                 }
                 metadata = ReadImageMetadata(path);
                 searchText = BuildSearchTextLower(metadata, path);
@@ -523,6 +527,7 @@ void AppState::ProcessFile(size_t index, const std::wstring& path, fs::file_time
             result.srv = srv;
             result.w = w;
             result.h = h;
+            result.helper = helper;
             result.metadata = metadata;
             result.searchTextLower = searchText;
 
@@ -530,6 +535,7 @@ void AppState::ProcessFile(size_t index, const std::wstring& path, fs::file_time
             newCached.srv = srv;
             newCached.w = w;
             newCached.h = h;
+            newCached.helper = helper;
             newCached.metadata = std::move(metadata);
             newCached.searchTextLower = std::move(searchText);
             newCached.mtime = mtime;
@@ -576,6 +582,7 @@ void AppState::PumpBackgroundResults() {
         e.metadata = std::move(r.metadata);
         e.searchTextLower = std::move(r.searchTextLower);
         e.thumbReady = true;
+        e.helper = e.metadata.isVideo ? 0 : HelperKind(e.displayName, r.helper, e.metadata.parsed.positivePrompt);
         e.nsfwPromptScore =
             e.metadata.parsed.positivePrompt.empty() ? -1.0f : PromptNsfwScore(e.metadata.parsed.positivePrompt);
         e.nsfwImageScore = LookupNsfwCache(e.path, e.mtime, e.size);
@@ -609,7 +616,9 @@ void AppState::PumpBackgroundResults() {
     }
 
     if (shouldAutoSelectFirst && !entries.empty() && entries[0].thumbReady) {
-        SelectIndex(0);
+        // the first as the gallery shows it, and no scrolling: the first by name could be the last in a sort by date, which opened the gallery at its bottom
+        SelectIndex(!visibleOrder.empty() && visibleOrder.front() < static_cast<int>(entries.size()) ? visibleOrder.front() : 0);
+        scrollToSelected = false;
     }
     if (liveFollowIndex_ >= 0 && liveFollowIndex_ < static_cast<int>(entries.size()) && entries[liveFollowIndex_].thumbReady) {
         SelectIndex(liveFollowIndex_);
@@ -618,7 +627,46 @@ void AppState::PumpBackgroundResults() {
     }
 }
 
+void AppState::GalleryRemember() {
+    if (currentFolder.empty()) return;
+    GalleryPlace p;
+    p.folder = currentFolder;
+    if (selectedIndex >= 0 && selectedIndex < static_cast<int>(entries.size())) p.path = entries[selectedIndex].path;
+    p.scrollY = gridScrollNow;
+    if (!galleryBack.empty() && galleryBack.back().folder == p.folder && galleryBack.back().path == p.path && galleryBack.back().scrollY == p.scrollY) return;
+    galleryBack.push_back(std::move(p));
+    if (galleryBack.size() > 30) galleryBack.erase(galleryBack.begin());
+}
+
+void AppState::GalleryGoBack() {
+    if (galleryBack.empty()) return;
+    const GalleryPlace p = galleryBack.back();
+    galleryBack.pop_back();
+    if (_wcsicmp(p.folder.c_str(), currentFolder.c_str()) != 0) {
+        OpenFolder(p.folder, p.path); // (the picture you had, brought into view when the folder is in)
+        return;
+    }
+    auto it = pathIndex_.find(ToLowerCopy(p.path));
+    if (it != pathIndex_.end() && it->second >= 0 && it->second < static_cast<int>(entries.size())) SelectIndex(it->second);
+    scrollToSelected = false;
+    gridScrollTo = p.scrollY;
+}
+
 void AppState::OpenFile(const std::wstring& file) {
+    // already in the open folder (or a folder below it): found there, the gallery stays what it is; it used to change to the file's own folder, and your place was gone
+    GalleryRemember();
+    auto it = pathIndex_.find(ToLowerCopy(file));
+    if (it != pathIndex_.end() && it->second >= 0 && it->second < static_cast<int>(entries.size()) && !entries[it->second].missing) {
+        if (std::find(visibleOrder.begin(), visibleOrder.end(), it->second) == visibleOrder.end()) { // (a filter hides it: it is what was asked for)
+            const int pixel = filters.pixel;
+            filters = GalleryFilters{};
+            filters.pixel = pixel;
+            filterEpoch++;
+        }
+        SelectIndex(it->second);
+        gridFindFrames = 6;
+        return;
+    }
     OpenFolder(fs::path(file).parent_path().wstring(), file); // selects the file once the scan arrives
 }
 
@@ -822,8 +870,19 @@ bool AppState::ShouldBlur(const ImageEntry& e) {
 
 bool AppState::ShouldBlur(const std::wstring& path) {
     if (!blurNsfw || path.empty()) return false;
-    if (nsfwRevealed.count(ToLowerCopy(path))) return false;
+    const std::wstring low = ToLowerCopy(path);
+    if (nsfwRevealed.count(low)) return false;
+    // pose drawings (the library's mannequins, Generate's trimmed copies): bare figures the blur turned into a white page - never blurred
+    if (low.find(L"\\libraries\\poses\\") != std::wstring::npos || low.find(L"\\generate\\poses\\") != std::wstring::npos) return false;
     return IsNsfw(path);
+}
+
+void AppState::NoteFileDeleted(const std::wstring& path) {
+    auto it = pathIndex_.find(ToLowerCopy(path));
+    if (it == pathIndex_.end() || it->second < 0 || it->second >= static_cast<int>(entries.size()) || entries[it->second].missing) return;
+    entries[it->second].missing = true;
+    missingCount_++;
+    filterEpoch++;
 }
 
 bool AppState::IsNsfw(const std::wstring& path) {
@@ -1570,14 +1629,19 @@ void AppState::LoadUiSettings() {
     showQualityBadges = j.value("showQualityBadges", showQualityBadges);
     showFolderPane = j.value("showFolderPane", showFolderPane);
     navCollapsed = j.value("navCollapsed", navCollapsed);
+    tilePages = j.value("tilePages", tilePages);
+    galleryHideViewer = j.value("galleryHideViewer", galleryHideViewer);
+    galleryHideInfo = j.value("galleryHideInfo", galleryHideInfo);
     visionLibBoxes = j.value("visionLibBoxes", visionLibBoxes);
     requestTab = std::clamp(j.value("lastTab", 0), 0, 12); // opens on the tab you were using
+    requestAlone = true;                                   // (on its own)
     visionLibFolders = j.value("visionLibFolders", visionLibFolders);
     visionLibBoxSize = std::clamp(j.value("visionLibBoxSize", visionLibBoxSize), 80.0f, 280.0f);
     visionLibImageFrac = std::clamp(j.value("visionLibImageFrac", visionLibImageFrac), 0.12f, 0.88f);
     visionLibSideBySide = j.value("visionLibSideBySide", visionLibSideBySide);
     showNsfwBadges = j.value("showNsfwBadges", showNsfwBadges);
     blurNsfw = j.value("blurNsfw", blurNsfw);
+    showHelpers = j.value("showHelpers", showHelpers);
     charView = std::clamp(j.value("charView", charView), 0, 2);
     charTile = std::clamp(j.value("charTile", charTile), 60.0f, 260.0f);
     watchFolder = j.value("watchFolder", watchFolder);
@@ -1593,6 +1657,7 @@ void AppState::LoadUiSettings() {
     videoLoop = j.value("videoLoop", videoLoop);
     videoAutoplay = j.value("videoAutoplay", videoAutoplay);
     lightTheme = j.value("lightTheme", lightTheme);
+    accent = j.value("accent", accent);
     uiScaleMul = std::clamp(j.value("uiScale", uiScaleMul), 0.7f, 1.8f);
     slideshowSeconds = std::clamp(j.value("slideshowSeconds", slideshowSeconds), 1.0f, 60.0f);
     if (j.contains("savedSearches") && j["savedSearches"].is_array()) {
@@ -1633,6 +1698,9 @@ void AppState::SaveUiSettings() {
         {"showQualityBadges", showQualityBadges},
         {"showFolderPane", showFolderPane},
         {"navCollapsed", navCollapsed},
+        {"tilePages", tilePages},
+        {"galleryHideViewer", galleryHideViewer},
+        {"galleryHideInfo", galleryHideInfo},
         {"visionLibBoxes", visionLibBoxes},
         {"lastTab", activeTab},
         {"visionLibFolders", visionLibFolders},
@@ -1641,6 +1709,7 @@ void AppState::SaveUiSettings() {
         {"visionLibSideBySide", visionLibSideBySide},
         {"showNsfwBadges", showNsfwBadges},
         {"blurNsfw", blurNsfw},
+        {"showHelpers", showHelpers},
         {"charView", charView},
         {"charTile", charTile},
         {"scanSubfolders", scanSubfolders},
@@ -1655,6 +1724,7 @@ void AppState::SaveUiSettings() {
         {"videoLoop", videoLoop},
         {"videoAutoplay", videoAutoplay},
         {"lightTheme", lightTheme},
+        {"accent", accent},
         {"uiScale", uiScaleMul},
         {"slideshowSeconds", slideshowSeconds},
         {"searchHistory", searchHistory},

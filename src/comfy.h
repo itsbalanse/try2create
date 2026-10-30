@@ -53,7 +53,7 @@ struct ComfySettings {
     bool directExpression = true;   // ...a concrete facial expression
     bool editJump = false;          // go to the Edits tab each time an edit is sent
     std::string editUnet; // the Qwen model picture editing loads (blank, new settings: Comfy-Org's, the turbo first) (a file in models/diffusion_models: .safetensors or .gguf; blank = find the standard Qwen Image 2.1 one)
-    std::vector<LoraEntry> editLoras{{"qwen2.1fun.safetensors", 0.7, true}}; // LoRAs of the built-in picture editing (Qwen), in this order
+    std::vector<LoraEntry> editLoras;    // LoRAs of the built-in picture editing (Qwen), in this order
     std::vector<LoraEntry> promptLoras;  // LoRAs added to the ComfyUI workflow chosen in the ComfyUI tab (Krea or any other): put on the model that feeds its sampler(s)
     bool promptReplaceLoras = false;     // ...after taking out the LoRA loaders that workflow already has
     std::vector<LoraEntry> upscaleLoras; // LoRAs of the MOSS redraw pass of the Upscale tab
@@ -63,6 +63,7 @@ struct ComfySettings {
     bool loraTriggers = true;       // their trigger words (from the file or Civitai) put into the prompt when they are on
     int editSteps = 25;             // picture editing (Qwen Image 2.1 Edit, built in): sampler steps
     int editResolution = 1024;      // ...and the size budget in pixels (0 = the size of the first picture)
+    std::string editEngine = "flux3"; // "flux3" (FLUX 3 Image Klein: faster, follows the words more closely; the default since 2026-10-29) or "qwen" (Qwen Image 2.1 Edit)
     std::wstring pixelModels;       // the folder of the Retro Diffusion models (pixel art) ("" = the "retrodiffusion" folder next to this program)
     std::string promptNode;         // node id of the prompt text when the automatic search picks the wrong one ("" = automatic)
     std::string negativeNode;
@@ -85,8 +86,6 @@ struct ComfyVeda {
     std::vector<std::string> predictors; // the files in models/veda
     bool fizgig = false;                 // the FizgigH3Tweaks node (Fizgig H3 Tweaks: detail & contrast, prompt strength) is installed
     bool continuum = false;              // H3 Continuum's sampler (H3ContinuumSamplerV39: videos longer than 15 s, in parts that continue each other)
-    bool liveportrait = false;           // ComfyUI-LivePortraitKJ (LivePortraitProcess: the swapped faces take the original's expressions)
-    bool maskvid = false;                // MaskVidExperiments (MVEx_MaskToLatentSpace: a masked swap regenerates only the person)
     std::string sam3;                    // a SAM 3 checkpoint ComfyUI has (it finds the person in every frame), "" = none
 };
 ComfyVeda ComfyAskVeda(const std::string& url);
@@ -96,25 +95,29 @@ struct ComfyProgress {
     int step = 0, steps = 0;
     double secPerStep = 0; // the bar's own rate
     double leftSeconds = 0;
+    int barsDone = 0; // the sampling bars of this job that have finished (a music video has one for each clip)
 };
-bool ComfyReadProgress(ComfyProgress& out);
+bool ComfyReadProgress(int activityId, ComfyProgress& out); // the running job's, from where it began in ComfyUI's log
 // Free system RAM in GB (a job that runs it out slows to a crawl: the model is paged to disk)
 double FreeRamGB();
 // A small graph (API format, as JSON text) run start to end from a background thread: files uploaded into the given nodes (LoadImage /
 // LoadVideo), its outputs downloaded into outDir. Blocks until done, failed, or timeoutSec.
 bool ComfyRunGraph(const std::string& url, const std::string& graphJson, const std::vector<std::pair<std::string, std::wstring>>& uploads,
                    const std::wstring& outDir, std::vector<std::wstring>& outFiles, std::string& error, int timeoutSec);
-std::wstring ComfyInstallDir(); // ComfyUI Desktop's install (holds ComfyUI\main.py, ComfyUI\.venv, standalone-env); "" = unknown
+std::wstring ComfyInstallDir(); // the install: Desktop's or a portable ComfyUI's folder (holds ComfyUI\main.py), a git clone's folder (holds main.py); "" = unknown
+std::wstring ComfyAppDir();     // the folder main.py is in (custom_nodes and models are in it), whichever kind of install it is; "" = unknown
+std::wstring ComfyPython();     // the Python ComfyUI runs on; "" = unknown
 void ComfySetFolder(const std::wstring& folder);  // the ComfyUI folder of the settings (comfyFolder): used when ComfyUI Desktop is not installed
 bool ComfyFolderValid(const std::wstring& folder, std::string* why); // is it a ComfyUI we can start (main.py and a Python)?
 // How long ComfyUI took to make a file, as recorded by this app when it was made (in %LOCALAPPDATA%\Try2Create\generation_times.json),
 // and what it was ("Video (Balanced, Veda): watch.png"). False = not known.
 bool ComfyGenerationTime(const std::wstring& file, double& seconds, std::string* what = nullptr);
+void ComfyMoveGenerationTime(const std::wstring& from, const std::wstring& to); // the file was renamed
 std::string FormatTook(double seconds); // "48 s", "3 min 48 s", "1 h 02 min"
 std::wstring ComfyInputDir();   // the folder its LoadImage / LoadVideo files are in ("" = unknown)
 // Try2Create's browser bridge: a tiny ComfyUI extension (custom_nodes\try2create_bridge, no nodes) with which ComfyUI opened as
 // http://.../?try2create=<prompt id> shows that job's workflow - queued, running (with its progress on the nodes) or done.
-bool ComfyBridgeInstalled();                    // its files are in ComfyUI Desktop's custom_nodes
+bool ComfyBridgeInstalled();                    // its files are in ComfyUI's custom_nodes
 bool ComfyInstallBridge(std::string& message);  // writes them there (ComfyUI loads it when it next starts)
 bool ComfyBridgeLoaded(const std::string& url); // the running ComfyUI has it (GET /extensions). Blocks briefly.
 std::wstring ComfyUploadedFrom(const std::string& name); // the file this app uploaded under that name ("" = not one of ours)
@@ -169,6 +172,9 @@ struct ComfySavedWorkflow {
 };
 
 struct ComfyJob {
+    bool quiet = false;     // what it makes is the sending page's own: not on the Made list (it reads them from its activity)
+    std::vector<std::string> stages; // for the job tracker: what each sampling pass makes (see ComfyActivity)
+    std::string finishing;
     double seconds = 0;     // video prompts: the clip length they were written for (0 = not a video / leave the workflow's)
     int activityId = 0;
     std::string prompt;
@@ -189,6 +195,8 @@ struct ComfyJob {
     int cutout = 0;             // 1: SAM 3 cuts what the prompt names ("person, animal") out of images[0]; the result is the mask (white = kept)
     std::string savePrefix;     // with sheetW/H: where ComfyUI saves it (default PixelArt/anim)
     int sheetW = 0, sheetH = 0; // picture EDIT on a canvas of exactly this size (a sprite sheet: the frames side by side), without the edit LoRAs; 0 = as usual
+    bool fillMask = false;      // picture EDIT: the last of images is a painted mask (white = redrawn), FLUX 3 fills only there
+    std::string editEngine;     // picture EDIT: "flux3" / "qwen" for this job ("" = the editor chosen in the settings)
     int draw = 0;           // pixel art drawn first by a strong model (the app pixelizes it): 1 = the ComfyUI tab's saved workflow (Krea), without its LoRAs,
                             // 2 = Qwen Image 2.1 (text to image). The drawing is about one megapixel, in the shape of pixW x pixH.
                             // 3 = the same Qwen drawing as a picture of its own (no pixel art after), saved under savePrefix.
@@ -209,6 +217,7 @@ struct ComfyResult {
     std::wstring localPath;                       // the file on this computer ("" = could not be fetched)
     bool video = false;
     bool audio = false;                           // a song or a sound (mp3, flac, wav, opus)
+    bool model3d = false;                         // a 3D file (a splat's .ply)
     double seconds = 0;                           // how long ComfyUI took to make it (0 = not known)
 };
 
@@ -224,6 +233,11 @@ struct ComfyActivity {
     ComfyState state = ComfyState::Waiting;
     std::string message;    // what is happening, or why it failed (ComfyUI's own words)
     std::string promptId;   // ComfyUI's id for it, once it is in ComfyUI's queue (the last one of a batch)
+    std::vector<std::string> stages; // what each sampling pass makes, in order ("Clip 2 of 5"); empty: "Pass 2 of 3" when there are several
+    std::string finishing;  // what comes after the last pass ("Joining the clips"); empty: decoding and saving
+    int passes = 0;         // the sampling passes in what was sent to ComfyUI
+    int prompts = 0;        // the prompts it became (several takes of one prompt: one each)
+    bool quiet = false;     // what it makes is the page's own: not on the Made list
     std::vector<ComfyResult> files;
     long long startedMs = 0, finishedMs = 0; // milliseconds since the app started
     long long runningMs = 0;                 // when ComfyUI began generating it (0 = not yet)
@@ -246,6 +260,8 @@ public:
     std::vector<ComfyResult> Results() const;      // finished pictures and videos, newest last
     // Takes results off the list (the files stay): all of them, or only the ones whose file is gone (moved or deleted). The number taken off.
     int ClearResults(bool onlyMissing);
+    void RemoveResult(const std::wstring& path); // this one file off the list
+    void RestoreResult(const ComfyResult& r);    // back on the list (out of the Recycle bin page)
     int Active() const { return active_.load(); }  // jobs queued or still generating
     void SetAddress(const std::string& url);       // the address to keep an eye on (is it up?)
     bool Reachable() const { return up_.load(); }
@@ -262,7 +278,10 @@ private:
     struct Queued {
         ComfySettings settings;
         ComfyJob job;
+        std::string model; // the model files it loads (ModelKeyOf): jobs on the model ComfyUI has loaded go first
+        int skipped = 0;   // times a later job on the loaded model went before it (at most 3)
     };
+    int WaitingInComfyLocked() const; // our jobs sitting in ComfyUI's queue, not running yet (under mutex_)
     struct Watching {
         ComfySettings settings;
         std::string id;
@@ -292,6 +311,7 @@ private:
     long long lastPingMs_ = 0;
     int nextActivity_ = 0;
     std::set<int> cancelled_; // sends stopped while they were being sent (their prompt is taken back once ComfyUI names it)
+    std::string lastModel_;   // the model files of the last job sent
     std::thread refreshThread_;
     std::atomic<bool> refreshing_{false};
     std::atomic<bool> up_{false};

@@ -112,10 +112,10 @@ struct Variant {
     const char* note;
 };
 const Variant kVariants[] = {
-    {"int8", "drama3_int8experts_bf16.safetensors", "int8", 38.7, 48, "as close to the original as FP8 and the fastest on an RTX 3090 (no silent takes in 12 cloned test takes)"},
+    {"int8", "drama3_int8experts_bf16.safetensors", "int8", 38.7, 48, "as close to the original as FP8 and the fastest on a 24 GB card (no silent takes in 12 cloned test takes)"},
     {"w6a8", "drama3_w6a8experts_bf16.safetensors", "W6A8", 32.7, 40, "less RAM (no silent takes in 16 cloned test takes)"},
     {"w4a8", "drama3_w4a8experts_bf16.safetensors", "W4A8", 24.6, 32, "the least RAM; falls silent more often with real voice clips"},
-    {"fp8", "drama3_fp8experts_bf16.safetensors", "FP8", 38.6, 48, "Fish Audio's own weights byte for byte, a little slower than int8 on a 3090"},
+    {"fp8", "drama3_fp8experts_bf16.safetensors", "FP8", 38.6, 48, "Fish Audio's own weights byte for byte, a little slower than int8 on a 24 GB card"},
 };
 const char* const kCodec = "drama3_codec.safetensors";
 // Since 2026-10-26 (a lower quant, for speed): Drama 3 runs on audio.cpp
@@ -365,8 +365,8 @@ void Save() {
 // ---- what is installed: the model files (ComfyUI's models folder) and the nodes (the running ComfyUI)
 std::wstring AsrDir(bool own) {
     if (own) {
-        const std::wstring inst = ComfyInstallDir();
-        return inst.empty() ? std::wstring() : inst + L"\\ComfyUI\\models\\asr";
+        const std::wstring app = ComfyAppDir();
+        return app.empty() ? std::wstring() : app + L"\\models\\asr";
     }
     const std::wstring m = ComfyModelsDir();
     return m.empty() ? std::wstring() : m + L"\\asr";
@@ -381,7 +381,7 @@ void CheckFiles() {
     g_d.gguf = !models.empty() && fs::exists(fs::path(models) / L"audiocpp" / kGguf, ec);
     g_d.audiocpp = fs::exists(AudiocppExe(), ec);
     const std::wstring install = ComfyInstallDir();
-    const fs::path node = fs::path(install) / L"ComfyUI" / L"custom_nodes" / L"ComfyUI-Drama3GGUF";
+    const fs::path node = fs::path(ComfyAppDir()) / L"custom_nodes" / L"ComfyUI-Drama3GGUF";
     g_d.node = !install.empty() && fs::exists(node / L"__init__.py", ec) && fs::exists(node / L"drama3gguf.json", ec);
     if (!models.empty()) {
         for (const Variant& v : kVariants) { // int8 first, then the others
@@ -603,7 +603,7 @@ Converted Convert(const std::string& script) {
 json Node(const char* cls, json inputs) { return {{"class_type", cls}, {"inputs", std::move(inputs)}}; }
 
 // The expert cache when it is left on auto: a fixed share of the card. (Sized to "what is free" at each chunk's start, it collapsed to
-// nothing from the third chunk on in a test on the 3090, every expert then copied from RAM; 12 GB held 96-98% hits on every chunk.)
+// nothing from the third chunk on in a test on a 24 GB card, every expert then copied from RAM; 12 GB held 96-98% hits on every chunk.)
 float AutoCacheGb() {
     static float gb = -1;
     if (gb < 0) {
@@ -1311,7 +1311,7 @@ void DrawDramaTab(AppState& app, float height) {
                     ImGui::EndDisabled();
                 } else {
                     ImGui::SameLine();
-                    ImGui::TextDisabled("(close and open ComfyUI Desktop)");
+                    ImGui::TextDisabled("(close and open ComfyUI)");
                 }
             }
         } else {
@@ -1337,7 +1337,7 @@ void DrawDramaTab(AppState& app, float height) {
                                         "and Qwen3-ASR from Hugging Face into ComfyUI's models folder (it resumes if stopped), and puts Try2Create's small\n"
                                         "Drama 3 node and the ComfyUI-Drama3 transcript nodes into custom_nodes. Then ComfyUI restarts.\n"
                                         "Weights: Fish Audio Community License (free below USD 500k a year in revenue)."
-                                      : "ComfyUI Desktop was not found");
+                                      : "ComfyUI was not found");
             if (!line.empty() && line.rfind("error", 0) == 0) ImGui::TextColored(ui::kBad, "%s", line.c_str());
         }
     }
@@ -1615,7 +1615,7 @@ void DrawDramaTab(AppState& app, float height) {
             std::istringstream in(l.second);
             for (std::string w; in >> w;) ++words;
         }
-        // measured on the 3090 with audio.cpp and the Q3 GGUF (2026-10-26): 25-29 s scenes in 128-character chunks took 10-12 s once loaded
+        // measured on a 24 GB card with audio.cpp and the Q3 GGUF (2026-10-26): 25-29 s scenes in 128-character chunks took 10-12 s once loaded
         // (about 0.02 s a frame, 21.5 frames a second of speech), loading about 15 s; the old ComfyUI-Drama3 int8 file took 0.42 s a frame
         const double spoken = std::max(5.0, words / 2.5), est = spoken * 21.5 * 0.03 + 5.0;
         ImGui::BeginDisabled(!ready || conv.lines.empty());

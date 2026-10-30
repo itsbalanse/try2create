@@ -169,11 +169,13 @@ bool LoadImageTexture(ID3D11Device* device, const std::wstring& path, LoadedImag
 }
 
 bool LoadImageTextureFromMemory(ID3D11Device* device, const unsigned char* data, size_t len, LoadedImage& out,
-                                 std::string* error) {
+                                 std::string* error, std::vector<unsigned char>* outRawRGBA) {
     std::vector<unsigned char> rgba;
     int width = 0, height = 0;
     if (!DecodeRGBAFromMemory(data, len, rgba, width, height, error)) return false;
-    return UploadRGBA(device, rgba, width, height, out, error);
+    const bool ok = UploadRGBA(device, rgba, width, height, out, error);
+    if (ok && outRawRGBA) *outRawRGBA = std::move(rgba);
+    return ok;
 }
 
 bool LoadImageThumbnail(ID3D11Device* device, const std::wstring& path, int maxDim, LoadedImage& out,

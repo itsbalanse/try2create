@@ -1,5 +1,6 @@
 #include "ui_theme.h"
 
+#include "imgui_internal.h" // (FoldButton: the window's inner rectangle)
 #include <windows.h>
 #include <cmath>
 #include <cstdio>
@@ -20,6 +21,21 @@ bool g_light = false;
 ImFont* g_bold = nullptr;
 ImFont* g_title = nullptr;
 ImFont* g_display = nullptr; // big text (a song's title): baked big, so it is not a small font blown up
+ImFont* g_mono = nullptr;    // labels and badges
+
+// Open Source Canvas's accents (src/lib/theme.ts, MIT): the colour, its strong and its soft shade
+struct AccentDef {
+    const char* name;
+    int c[3], strong[3], soft[3];
+};
+const AccentDef kAccents[] = {
+    {"Violet", {139, 92, 246}, {124, 58, 237}, {196, 181, 253}},  {"Blue", {79, 124, 243}, {59, 100, 216}, {157, 184, 255}},
+    {"Teal", {18, 165, 148}, {13, 134, 119}, {94, 234, 212}},     {"Emerald", {22, 163, 74}, {21, 128, 61}, {110, 231, 183}},
+    {"Amber", {217, 119, 6}, {180, 83, 9}, {252, 211, 77}},       {"Coral", {232, 93, 61}, {194, 65, 38}, {253, 186, 116}},
+    {"Rose", {225, 29, 72}, {190, 18, 60}, {253, 164, 175}},      {"Slate", {100, 116, 139}, {71, 85, 105}, {203, 213, 225}},
+};
+constexpr int kAccentCount = static_cast<int>(sizeof(kAccents) / sizeof(kAccents[0]));
+int g_accent = 0;
 
 std::string WideToUtf8(const std::wstring& w) {
     if (w.empty()) return {};
@@ -46,6 +62,7 @@ void BuildFontsStb(float scale) {
     g_bold = nullptr;
     g_title = nullptr;
     g_display = nullptr;
+    g_mono = nullptr;
 
     const float size = std::round(15.0f * scale);
 
@@ -225,7 +242,8 @@ ImFont* AddGdiFont(HDC dc, const wchar_t* primaryFace, int primaryWeight, const 
                     }
                 }
             }
-            g.rect = io.Fonts->AddCustomRectFontGlyph(font, static_cast<ImWchar>(cp), g.w, g.h, advance, offset);
+            // (a clear pixel all round: ImGui packs custom rectangles edge to edge, so text drawn at any other size picked up bits of the letters next to it in the atlas)
+            g.rect = io.Fonts->AddCustomRectFontGlyph(font, static_cast<ImWchar>(cp), g.w + 2, g.h + 2, advance, ImVec2(offset.x - 1.0f, offset.y - 1.0f));
             pending.push_back(std::move(g));
         }
     }
@@ -235,12 +253,30 @@ ImFont* AddGdiFont(HDC dc, const wchar_t* primaryFace, int primaryWeight, const 
     return font;
 }
 
+// A font shipped next to the app (its fonts folder), loaded for this process only (nothing is installed); "" when it is not there.
+// Since 2026-10-30: Inter and Space Grotesk (both SIL OFL 1.1, their licences beside them) - Open Source Canvas's UI and display faces.
+std::string AppFont(const wchar_t* fileName) {
+    wchar_t exe[MAX_PATH] = {};
+    if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return {};
+    std::error_code ec;
+    const fs::path p = fs::path(exe).parent_path() / L"fonts" / fileName;
+    if (!fs::is_regular_file(p, ec)) return {};
+    static std::vector<std::wstring> added;
+    if (std::find(added.begin(), added.end(), p.wstring()) == added.end() && AddFontResourceExW(p.c_str(), FR_PRIVATE, nullptr) > 0) added.push_back(p.wstring());
+    return WideToUtf8(p.wstring());
+}
+
 bool BuildFontsGdi(float scale) {
     ImGuiIO& io = ImGui::GetIO();
-    const std::string regularTtf = FindSystemFont(L"segoeui.ttf");
+    // Inter for the UI (its SemiBold as the bold), Space Grotesk Medium for titles; Segoe UI when they are not beside the app
+    const std::string interTtf = AppFont(L"Inter-Regular.ttf"), interSemiTtf = AppFont(L"Inter-SemiBold.ttf"), groteskTtf = AppFont(L"SpaceGrotesk-Medium.ttf");
+    const bool inter = !interTtf.empty(), interSemi = !interSemiTtf.empty(), grotesk = !groteskTtf.empty();
+    const std::string regularTtf = inter ? interTtf : FindSystemFont(L"segoeui.ttf");
     if (regularTtf.empty()) return false;
-    std::string semiboldTtf = FindSystemFont(L"seguisb.ttf");
+    std::string semiboldTtf = grotesk ? groteskTtf : FindSystemFont(L"seguisb.ttf");
     if (semiboldTtf.empty()) semiboldTtf = regularTtf;
+    const wchar_t* uiFace = inter ? L"Inter" : L"Segoe UI";
+    const wchar_t* titleFace = grotesk ? L"Space Grotesk Medium" : L"Segoe UI Semibold";
 
     // Code points: Latin + Cyrillic + Greek + punctuation/arrows, and CJK for file names and prompts.
     static ImVector<ImWchar> latin, full;
@@ -259,7 +295,7 @@ bool BuildFontsGdi(float scale) {
     }
 
     static const wchar_t* const kFallbacks[] = {L"Yu Gothic UI", L"Microsoft YaHei UI", L"Malgun Gothic", L"Segoe UI Symbol"};
-    const int cell = static_cast<int>(std::round(18.0f * scale));
+    const int cell = static_cast<int>(std::round((inter ? 17.0f : 18.0f) * scale)); // (Inter is a little larger than Segoe UI at the same cell)
     const int titleCell = static_cast<int>(std::round(28.0f * scale));
 
     HDC dc = CreateCompatibleDC(nullptr);
@@ -267,18 +303,26 @@ bool BuildFontsGdi(float scale) {
     std::vector<PendingGlyph> pending;
     int ascent = 0, descent = 0, boldAscent = 0, boldDescent = 0, titleAscent = 0, titleDescent = 0, displayAscent = 0, displayDescent = 0;
 
-    ImFont* regular = AddGdiFont(dc, L"Segoe UI", FW_NORMAL, kFallbacks, 4, cell, full.Data, regularTtf, pending, &ascent, &descent);
-    // True bold (Segoe UI Semibold is too close to regular weight at small hinted sizes).
-    ImFont* bold = regular ? AddGdiFont(dc, L"Segoe UI", FW_BOLD, kFallbacks, 4, cell, latin.Data, regularTtf, pending,
-                                        &boldAscent, &boldDescent)
-                           : nullptr;
-    static const ImWchar kAscii[] = {0x20, 0x7E, 0xA0, 0xFF, 0x2013, 0x2014, 0x2026, 0x2026, 0};
-    ImFont* title = regular ? AddGdiFont(dc, L"Segoe UI Semibold", FW_NORMAL, nullptr, 0, titleCell, kAscii, semiboldTtf,
+    ImFont* regular = AddGdiFont(dc, uiFace, FW_NORMAL, kFallbacks, 4, cell, full.Data, regularTtf, pending, &ascent, &descent);
+    // The bold: Inter SemiBold (Open Source Canvas's 600 weight); with Segoe UI a true bold (its Semibold is too close to regular at small hinted sizes)
+    ImFont* bold = !regular ? nullptr
+                   : interSemi ? AddGdiFont(dc, L"Inter SemiBold", FW_NORMAL, kFallbacks, 4, cell, latin.Data, interSemiTtf, pending, &boldAscent, &boldDescent)
+                               : AddGdiFont(dc, uiFace, FW_BOLD, kFallbacks, 4, cell, latin.Data, regularTtf, pending, &boldAscent, &boldDescent);
+    static const ImWchar kAscii[] = {0x20, 0x7E, 0xA0, 0xFF, 0x2013, 0x2014, 0x2018, 0x201D, 0x2026, 0x2026, 0}; // (with the curly quotes: "I'm" in a song's lyrics came out as "I?m")
+    ImFont* title = regular ? AddGdiFont(dc, titleFace, FW_NORMAL, nullptr, 0, titleCell, kAscii, semiboldTtf,
                                          pending, &titleAscent, &titleDescent)
                             : nullptr;
-    ImFont* display = regular ? AddGdiFont(dc, L"Segoe UI Semibold", FW_NORMAL, nullptr, 0, static_cast<int>(std::round(54.0f * scale)), kAscii, semiboldTtf,
+    ImFont* display = regular ? AddGdiFont(dc, titleFace, FW_NORMAL, nullptr, 0, static_cast<int>(std::round(54.0f * scale)), kAscii, semiboldTtf,
                                            pending, &displayAscent, &displayDescent)
                               : nullptr;
+    // the labels' monospace (Cascadia Mono when Windows has it, else Consolas), small; regular weight (Consolas has no semibold: Windows'
+    // made-up bold came out blocky at this size)
+    int monoAscent = 0, monoDescent = 0;
+    const std::string cascadia = FindSystemFont(L"CascadiaMono.ttf"), consolas = FindSystemFont(L"consola.ttf");
+    ImFont* mono = nullptr;
+    if (regular && (!cascadia.empty() || !consolas.empty()))
+        mono = AddGdiFont(dc, cascadia.empty() ? L"Consolas" : L"Cascadia Mono", FW_NORMAL, nullptr, 0, static_cast<int>(std::round(14.5f * scale)), kAscii,
+                          cascadia.empty() ? consolas : cascadia, pending, &monoAscent, &monoDescent);
     DeleteDC(dc);
     if (!regular) return false;
 
@@ -289,7 +333,7 @@ bool BuildFontsGdi(float scale) {
         const ImFontAtlasCustomRect* r = io.Fonts->GetCustomRectByIndex(g.rect);
         if (!r || !r->IsPacked()) continue;
         for (int y = 0; y < g.h; ++y) {
-            memcpy(io.Fonts->TexPixelsAlpha8 + static_cast<size_t>(r->Y + y) * stride + r->X,
+            memcpy(io.Fonts->TexPixelsAlpha8 + static_cast<size_t>(r->Y + 1 + y) * stride + r->X + 1,
                    g.alpha.data() + static_cast<size_t>(y) * g.w, static_cast<size_t>(g.w));
         }
     }
@@ -308,9 +352,14 @@ bool BuildFontsGdi(float scale) {
         display->Ascent = static_cast<float>(displayAscent);
         display->Descent = -static_cast<float>(displayDescent);
     }
+    if (mono) {
+        mono->Ascent = static_cast<float>(monoAscent);
+        mono->Descent = -static_cast<float>(monoDescent);
+    }
     g_bold = bold;
     g_title = title;
     g_display = display;
+    g_mono = mono;
     io.FontDefault = regular;
     return true;
 }
@@ -321,11 +370,13 @@ void BuildFonts(float scale) {
     g_bold = nullptr;
     g_title = nullptr;
     g_display = nullptr;
+    g_mono = nullptr;
     if (BuildFontsGdi(scale)) return;
     io.Fonts->Clear();
     g_bold = nullptr;
     g_title = nullptr;
     g_display = nullptr;
+    g_mono = nullptr;
     BuildFontsStb(scale);
 }
 
@@ -333,25 +384,29 @@ void ApplyTheme(float scale) {
     ImGuiStyle& s = ImGui::GetStyle();
     s = ImGuiStyle();
 
-    s.WindowPadding = ImVec2(12, 10);
-    s.FramePadding = ImVec2(10, 6);
-    s.CellPadding = ImVec2(8, 5);
-    s.ItemSpacing = ImVec2(8, 7);
-    s.ItemInnerSpacing = ImVec2(6, 4);
+    // (2026-10-28, "make the whole UI slicker": more air, rounder cards and controls, thin scrollbars; the panels told apart by their shade
+    // more than by lines)
+    // (2026-10-30, after Open Source Canvas's design - MIT, raph651/open-source-canvas: buttons and chips as pills with real padding,
+    // 16-18 px cards, a hairline border on panels and controls, ghost-filled buttons, more air)
+    s.WindowPadding = ImVec2(16, 14);
+    s.FramePadding = ImVec2(13, 7);
+    s.CellPadding = ImVec2(8, 6);
+    s.ItemSpacing = ImVec2(8, 8);
+    s.ItemInnerSpacing = ImVec2(7, 4);
     s.IndentSpacing = 18;
-    s.ScrollbarSize = 12;
+    s.ScrollbarSize = 9;
     s.GrabMinSize = 12;
     s.WindowBorderSize = 1;
     s.ChildBorderSize = 1;
     s.PopupBorderSize = 1;
-    s.FrameBorderSize = 0;
-    s.WindowRounding = 8;
-    s.ChildRounding = 8;
-    s.FrameRounding = 6;
-    s.PopupRounding = 8;
-    s.ScrollbarRounding = 8;
-    s.GrabRounding = 6;
-    s.TabRounding = 6;
+    s.FrameBorderSize = 1;
+    s.WindowRounding = 16;
+    s.ChildRounding = 16;
+    s.FrameRounding = 13; // (a button's height is about 30: nearly a pill; a prompt box gets soft corners)
+    s.PopupRounding = 14;
+    s.ScrollbarRounding = 10;
+    s.GrabRounding = 13;
+    s.TabRounding = 12;
     s.WindowTitleAlign = ImVec2(0.5f, 0.5f);
     s.SeparatorTextBorderSize = 1;
     s.SeparatorTextPadding = ImVec2(10, 4);
@@ -361,90 +416,96 @@ void ApplyTheme(float scale) {
     ImVec4* c = s.Colors;
     auto rgb = [](int r, int g, int b, float a = 1.0f) { return ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, a); };
 
+    // the accent (its colour; strong = pressed; hover a third of the way to its soft shade)
+    const AccentDef& a = kAccents[std::clamp(g_accent, 0, kAccentCount - 1)];
+    auto mix = [](const int* p, const int* q, float t) { return ImVec4((p[0] + (q[0] - p[0]) * t) / 255.0f, (p[1] + (q[1] - p[1]) * t) / 255.0f,
+                                                                       (p[2] + (q[2] - p[2]) * t) / 255.0f, 1.0f); };
+    kAccent = rgb(a.c[0], a.c[1], a.c[2]);
+    kAccentActive = rgb(a.strong[0], a.strong[1], a.strong[2]);
+    kAccentHover = mix(a.c, a.soft, 0.32f);
+
+    // Open Source Canvas's palettes (src/styles.css): light - bg #f1f3f1, panels white, ink #151c17, lines at 10% / 18%; night - bg #090d12,
+    // panels #11161d, text #f3f1e8, muted #8d948f / #626a66, lines white at 10% / 18%. Controls are "ghost": a faint fill of the ink over the panel.
     if (g_light) {
-        kAccent = rgb(37, 99, 235);
-        kAccentHover = rgb(59, 119, 245);
-        kAccentActive = rgb(29, 78, 200);
         kGood = rgb(22, 140, 70);
-        kWarn = rgb(176, 112, 0);
-        kBad = rgb(200, 45, 45);
-        kTextDim = rgb(104, 112, 128);
+        kWarn = rgb(166, 124, 0);
+        kBad = rgb(217, 56, 42);
+        kTextDim = rgb(93, 101, 95);
+        auto ink = [&](float al) { return rgb(21, 28, 23, al); };
 
-        c[ImGuiCol_Text] = rgb(26, 30, 38);
+        c[ImGuiCol_Text] = rgb(21, 28, 23);
         c[ImGuiCol_TextDisabled] = kTextDim;
-        c[ImGuiCol_WindowBg] = rgb(240, 242, 246);
-        c[ImGuiCol_ChildBg] = rgb(249, 250, 252);
-        c[ImGuiCol_PopupBg] = rgb(252, 252, 254, 0.99f);
-        c[ImGuiCol_Border] = rgb(212, 217, 227);
+        c[ImGuiCol_WindowBg] = rgb(241, 243, 241);
+        c[ImGuiCol_ChildBg] = rgb(255, 255, 255, 0.86f);
+        c[ImGuiCol_PopupBg] = rgb(255, 255, 255, 0.99f);
+        c[ImGuiCol_Border] = ink(0.10f);
         c[ImGuiCol_BorderShadow] = rgb(0, 0, 0, 0);
-        c[ImGuiCol_FrameBg] = rgb(228, 232, 240);
-        c[ImGuiCol_FrameBgHovered] = rgb(218, 224, 235);
-        c[ImGuiCol_FrameBgActive] = rgb(207, 215, 230);
-        c[ImGuiCol_TitleBg] = rgb(240, 242, 246);
-        c[ImGuiCol_TitleBgActive] = rgb(232, 235, 242);
-        c[ImGuiCol_TitleBgCollapsed] = rgb(240, 242, 246);
-        c[ImGuiCol_MenuBarBg] = rgb(249, 250, 252);
+        c[ImGuiCol_FrameBg] = ink(0.035f);
+        c[ImGuiCol_FrameBgHovered] = ink(0.07f);
+        c[ImGuiCol_FrameBgActive] = ink(0.10f);
+        c[ImGuiCol_TitleBg] = rgb(241, 243, 241);
+        c[ImGuiCol_TitleBgActive] = rgb(233, 237, 234);
+        c[ImGuiCol_TitleBgCollapsed] = rgb(241, 243, 241);
+        c[ImGuiCol_MenuBarBg] = rgb(241, 243, 241);
         c[ImGuiCol_ScrollbarBg] = rgb(0, 0, 0, 0);
-        c[ImGuiCol_ScrollbarGrab] = rgb(184, 192, 206);
-        c[ImGuiCol_ScrollbarGrabHovered] = rgb(160, 170, 188);
-        c[ImGuiCol_ScrollbarGrabActive] = rgb(136, 148, 170);
-        c[ImGuiCol_Button] = rgb(222, 227, 237);
-        c[ImGuiCol_ButtonHovered] = rgb(208, 216, 230);
-        c[ImGuiCol_ButtonActive] = rgb(192, 203, 222);
-        c[ImGuiCol_Header] = rgb(226, 231, 240);
-        c[ImGuiCol_HeaderHovered] = rgb(214, 222, 236);
-        c[ImGuiCol_HeaderActive] = rgb(200, 211, 230);
-        c[ImGuiCol_Separator] = rgb(212, 217, 227);
-        c[ImGuiCol_ResizeGrip] = rgb(160, 170, 188, 0.5f);
-        c[ImGuiCol_Tab] = rgb(228, 232, 240);
-        c[ImGuiCol_TabSelected] = rgb(190, 210, 250);
-        c[ImGuiCol_ModalWindowDimBg] = rgb(30, 36, 48, 0.35f);
-        c[ImGuiCol_TableHeaderBg] = rgb(234, 237, 244);
-        c[ImGuiCol_TableBorderStrong] = rgb(212, 217, 227);
-        c[ImGuiCol_TableBorderLight] = rgb(224, 228, 237);
-        c[ImGuiCol_TableRowBgAlt] = rgb(0, 0, 0, 0.03f);
+        c[ImGuiCol_ScrollbarGrab] = ink(0.13f);
+        c[ImGuiCol_ScrollbarGrabHovered] = ink(0.22f);
+        c[ImGuiCol_ScrollbarGrabActive] = ink(0.30f);
+        c[ImGuiCol_Button] = ink(0.035f);
+        c[ImGuiCol_ButtonHovered] = ink(0.075f);
+        c[ImGuiCol_ButtonActive] = ink(0.11f);
+        c[ImGuiCol_Header] = ink(0.05f);
+        c[ImGuiCol_HeaderHovered] = ink(0.08f);
+        c[ImGuiCol_HeaderActive] = ink(0.11f);
+        c[ImGuiCol_Separator] = ink(0.10f);
+        c[ImGuiCol_ResizeGrip] = ink(0.12f);
+        c[ImGuiCol_Tab] = ink(0.035f);
+        c[ImGuiCol_TabSelected] = ImVec4(kAccent.x, kAccent.y, kAccent.z, 0.22f);
+        c[ImGuiCol_ModalWindowDimBg] = ink(0.30f);
+        c[ImGuiCol_TableHeaderBg] = ink(0.04f);
+        c[ImGuiCol_TableBorderStrong] = ink(0.10f);
+        c[ImGuiCol_TableBorderLight] = ink(0.06f);
+        c[ImGuiCol_TableRowBgAlt] = ink(0.025f);
     } else {
-        kAccent = ImVec4(0.30f, 0.60f, 1.00f, 1.00f);
-        kAccentHover = ImVec4(0.42f, 0.69f, 1.00f, 1.00f);
-        kAccentActive = ImVec4(0.22f, 0.50f, 0.90f, 1.00f);
-        kGood = ImVec4(0.45f, 0.85f, 0.55f, 1.00f);
-        kWarn = ImVec4(1.00f, 0.78f, 0.33f, 1.00f);
-        kBad = ImVec4(1.00f, 0.45f, 0.42f, 1.00f);
-        kTextDim = ImVec4(0.55f, 0.59f, 0.66f, 1.00f);
+        kGood = rgb(110, 231, 160);
+        kWarn = rgb(255, 226, 122);
+        kBad = rgb(255, 113, 100);
+        kTextDim = rgb(141, 148, 143);
+        auto ov = [&](float al) { return rgb(255, 255, 255, al); };
 
-        c[ImGuiCol_Text] = rgb(230, 233, 238);
+        c[ImGuiCol_Text] = rgb(243, 241, 232);
         c[ImGuiCol_TextDisabled] = kTextDim;
-        c[ImGuiCol_WindowBg] = rgb(20, 22, 26);
-        c[ImGuiCol_ChildBg] = rgb(24, 27, 32);
-        c[ImGuiCol_PopupBg] = rgb(28, 32, 38, 0.98f);
-        c[ImGuiCol_Border] = rgb(46, 52, 62);
+        c[ImGuiCol_WindowBg] = rgb(9, 13, 18);
+        c[ImGuiCol_ChildBg] = rgb(17, 22, 29, 0.82f); // (a little see-through: the glow behind the page shows)
+        c[ImGuiCol_PopupBg] = rgb(17, 22, 29, 0.98f);
+        c[ImGuiCol_Border] = ov(0.10f);
         c[ImGuiCol_BorderShadow] = rgb(0, 0, 0, 0);
-        c[ImGuiCol_FrameBg] = rgb(34, 38, 45);
-        c[ImGuiCol_FrameBgHovered] = rgb(42, 48, 57);
-        c[ImGuiCol_FrameBgActive] = rgb(50, 57, 68);
-        c[ImGuiCol_TitleBg] = rgb(20, 22, 26);
-        c[ImGuiCol_TitleBgActive] = rgb(28, 32, 38);
-        c[ImGuiCol_TitleBgCollapsed] = rgb(20, 22, 26);
-        c[ImGuiCol_MenuBarBg] = rgb(24, 27, 32);
+        c[ImGuiCol_FrameBg] = ov(0.035f);
+        c[ImGuiCol_FrameBgHovered] = ov(0.07f);
+        c[ImGuiCol_FrameBgActive] = ov(0.10f);
+        c[ImGuiCol_TitleBg] = rgb(9, 13, 18);
+        c[ImGuiCol_TitleBgActive] = rgb(17, 22, 29);
+        c[ImGuiCol_TitleBgCollapsed] = rgb(9, 13, 18);
+        c[ImGuiCol_MenuBarBg] = rgb(9, 13, 18, 0.0f);
         c[ImGuiCol_ScrollbarBg] = rgb(0, 0, 0, 0);
-        c[ImGuiCol_ScrollbarGrab] = rgb(70, 78, 92);
-        c[ImGuiCol_ScrollbarGrabHovered] = rgb(92, 102, 120);
-        c[ImGuiCol_ScrollbarGrabActive] = rgb(116, 128, 150);
-        c[ImGuiCol_Button] = rgb(44, 50, 60);
-        c[ImGuiCol_ButtonHovered] = rgb(58, 66, 80);
-        c[ImGuiCol_ButtonActive] = rgb(72, 82, 98);
-        c[ImGuiCol_Header] = rgb(36, 42, 52);
-        c[ImGuiCol_HeaderHovered] = rgb(46, 54, 66);
-        c[ImGuiCol_HeaderActive] = rgb(54, 64, 80);
-        c[ImGuiCol_Separator] = rgb(46, 52, 62);
-        c[ImGuiCol_ResizeGrip] = rgb(70, 78, 92, 0.5f);
-        c[ImGuiCol_Tab] = rgb(34, 38, 45);
-        c[ImGuiCol_TabSelected] = rgb(48, 100, 180);
-        c[ImGuiCol_ModalWindowDimBg] = rgb(0, 0, 0, 0.55f);
-        c[ImGuiCol_TableHeaderBg] = rgb(30, 34, 41);
-        c[ImGuiCol_TableBorderStrong] = rgb(46, 52, 62);
-        c[ImGuiCol_TableBorderLight] = rgb(38, 43, 51);
-        c[ImGuiCol_TableRowBgAlt] = rgb(255, 255, 255, 0.025f);
+        c[ImGuiCol_ScrollbarGrab] = ov(0.13f);
+        c[ImGuiCol_ScrollbarGrabHovered] = ov(0.20f);
+        c[ImGuiCol_ScrollbarGrabActive] = ov(0.28f);
+        c[ImGuiCol_Button] = ov(0.04f);
+        c[ImGuiCol_ButtonHovered] = ov(0.08f);
+        c[ImGuiCol_ButtonActive] = ov(0.12f);
+        c[ImGuiCol_Header] = ov(0.05f);
+        c[ImGuiCol_HeaderHovered] = ov(0.08f);
+        c[ImGuiCol_HeaderActive] = ov(0.11f);
+        c[ImGuiCol_Separator] = ov(0.10f);
+        c[ImGuiCol_ResizeGrip] = ov(0.08f);
+        c[ImGuiCol_Tab] = ov(0.035f);
+        c[ImGuiCol_TabSelected] = ImVec4(kAccent.x, kAccent.y, kAccent.z, 0.30f);
+        c[ImGuiCol_ModalWindowDimBg] = rgb(0, 0, 0, 0.62f);
+        c[ImGuiCol_TableHeaderBg] = ov(0.04f);
+        c[ImGuiCol_TableBorderStrong] = ov(0.10f);
+        c[ImGuiCol_TableBorderLight] = ov(0.06f);
+        c[ImGuiCol_TableRowBgAlt] = ov(0.02f);
     }
     c[ImGuiCol_CheckMark] = kAccent;
     c[ImGuiCol_SliderGrab] = ImVec4(kAccent.x, kAccent.y, kAccent.z, 0.62f); // see-through: the slider's value is drawn under it
@@ -476,11 +537,21 @@ void Init(float scale, bool light) {
 float Scale() { return g_scale; }
 bool IsLight() { return g_light; }
 
-ImVec4 ViewerBackground() { return g_light ? ImVec4(0.93f, 0.94f, 0.96f, 1.0f) : ImVec4(0.050f, 0.057f, 0.070f, 1.0f); }
-ImU32 ThumbPlaceholder() { return g_light ? IM_COL32(222, 227, 236, 255) : IM_COL32(38, 43, 52, 255); }
-ImVec4 ChipColor() { return g_light ? ImVec4(0.86f, 0.89f, 0.95f, 1.0f) : ImVec4(0.18f, 0.21f, 0.27f, 1.0f); }
-ImVec4 ChipHoverColor() { return g_light ? ImVec4(0.74f, 0.82f, 0.96f, 1.0f) : ImVec4(0.24f, 0.33f, 0.48f, 1.0f); }
-ImVec4 ChipActiveColor() { return g_light ? ImVec4(0.62f, 0.74f, 0.95f, 1.0f) : ImVec4(0.28f, 0.42f, 0.66f, 1.0f); }
+int AccentCount() { return kAccentCount; }
+const char* AccentName(int i) { return kAccents[std::clamp(i, 0, kAccentCount - 1)].name; }
+ImVec4 AccentSwatch(int i) {
+    const int* p = kAccents[std::clamp(i, 0, kAccentCount - 1)].c;
+    return ImVec4(p[0] / 255.0f, p[1] / 255.0f, p[2] / 255.0f, 1.0f);
+}
+void SetAccentIndex(int i) { g_accent = std::clamp(i, 0, kAccentCount - 1); }
+int AccentIndex() { return g_accent; }
+
+ImVec4 ViewerBackground() { return g_light ? ImVec4(0.925f, 0.937f, 0.929f, 1.0f) : ImVec4(0.024f, 0.035f, 0.047f, 1.0f); }
+ImU32 ThumbPlaceholder() { return g_light ? IM_COL32(21, 28, 23, 18) : IM_COL32(255, 255, 255, 14); }
+// chips: ghost when off (the ink's faint fill, as Open Source Canvas's ghost buttons), the accent when on
+ImVec4 ChipColor() { return g_light ? ImVec4(0.082f, 0.11f, 0.09f, 0.045f) : ImVec4(1.0f, 1.0f, 1.0f, 0.05f); }
+ImVec4 ChipHoverColor() { return g_light ? ImVec4(0.082f, 0.11f, 0.09f, 0.09f) : ImVec4(1.0f, 1.0f, 1.0f, 0.10f); }
+ImVec4 ChipActiveColor() { return ImVec4(kAccent.x, kAccent.y, kAccent.z, g_light ? 0.88f : 0.85f); }
 ImU32 StarColor(bool filled) {
     if (filled) return g_light ? IM_COL32(214, 140, 0, 255) : IM_COL32(255, 196, 64, 255);
     return g_light ? IM_COL32(170, 178, 192, 255) : IM_COL32(90, 98, 112, 255);
@@ -489,6 +560,32 @@ ImU32 StarColor(bool filled) {
 ImFont* BoldFont() { return g_bold ? g_bold : ImGui::GetFont(); }
 ImFont* TitleFont() { return g_title ? g_title : BoldFont(); }
 ImFont* DisplayFont() { return g_display ? g_display : TitleFont(); }
+ImFont* MonoFont() { return g_mono ? g_mono : ImGui::GetFont(); }
+
+void Eyebrow(const char* text, const ImVec4* color) {
+    // capitals, a monospace, and letters spread out (about 0.16 em)
+    ImFont* f = MonoFont();
+    const float size = f->FontSize, track = size * 0.16f;
+    std::string up = text ? text : "";
+    for (char& ch : up) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    float w = 0.0f;
+    for (char ch : up) {
+        const char s[2] = {ch, 0};
+        w += f->CalcTextSizeA(size, FLT_MAX, 0.0f, s).x + track;
+    }
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float lineH = ImGui::GetTextLineHeight();
+    ImGui::Dummy(ImVec2(std::max(0.0f, w - track), lineH));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 col = ImGui::GetColorU32(color ? *color : (g_light ? ImVec4(0.54f, 0.57f, 0.55f, 1.0f) : ImVec4(0.55f, 0.58f, 0.56f, 1.0f)));
+    float x = p.x;
+    const float y = p.y + (lineH - size) * 0.5f;
+    for (char ch : up) {
+        const char s[2] = {ch, 0};
+        dl->AddText(f, size, ImVec2(x, y), col, s);
+        x += f->CalcTextSizeA(size, FLT_MAX, 0.0f, s).x + track;
+    }
+}
 
 void SameLineIfFits(const char* nextLabel) {
     const ImGuiStyle& st = ImGui::GetStyle();
@@ -504,6 +601,13 @@ bool PrimaryButton(const char* label, const ImVec2& size) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
     bool pressed = ImGui::Button(label, size);
     ImGui::PopStyleColor(4);
+    if (!g_light && ImGui::IsItemVisible()) {
+        const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+        const float r = ImGui::GetStyle().FrameRounding;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(a, ImVec2(b.x, a.y + (b.y - a.y) * 0.5f), IM_COL32(255, 255, 255, 18), r, ImDrawFlags_RoundCornersTop);
+        dl->AddRect(a, b, IM_COL32(255, 255, 255, 28), r);
+    }
     return pressed;
 }
 
@@ -527,14 +631,82 @@ void Pill(const char* text, ImU32 background, ImU32 foreground) {
     ImGui::Dummy(size);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), background, size.y * 0.5f);
+    dl->AddRect(pos, ImVec2(pos.x + size.x, pos.y + size.y), (foreground & 0x00FFFFFF) | (static_cast<ImU32>(70) << IM_COL32_A_SHIFT), size.y * 0.5f); // (a hairline edge, as its badges)
     dl->AddText(ImVec2(pos.x + pad.x, pos.y + pad.y), foreground, text);
 }
 
-void SectionHeading(const char* text) {
-    ImGui::PushFont(BoldFont());
-    ImGui::TextColored(kTextDim, "%s", text);
-    ImGui::PopFont();
-    ImGui::Separator();
+void DrawBackdrop(ImDrawList* dl, ImVec2 min, ImVec2 max) {
+    if (g_light) return; // (its day theme is plain)
+    const float w = max.x - min.x, h = max.y - min.y;
+    // radial-gradient(1100px 680px at 12% -12%, rgba(88,124,255,.19), transparent 62%) and (900px 620px at 84% 2%, rgba(255,122,61,.07), 58%):
+    // a gradient made of stacked ellipses, each a little smaller and adding a little more colour
+    auto glow = [&](float cx, float cy, float rx, float ry, int r, int g, int b, float alpha, float reach) {
+        const int steps = 24;
+        for (int k = 0; k < steps; ++k) {
+            const float t = 1.0f - static_cast<float>(k) / steps; // 1 at the edge -> small at the middle
+            const float a = alpha / steps * 1.35f;
+            dl->AddEllipseFilled(ImVec2(cx, cy), ImVec2(rx * reach * t, ry * reach * t), IM_COL32(r, g, b, static_cast<int>(a * 255.0f)), 0.0f, 64);
+        }
+    };
+    dl->PushClipRect(min, max, true);
+    glow(min.x + w * 0.12f, min.y - h * 0.12f, Dp(1100.0f) * 0.5f, Dp(680.0f) * 0.5f, 88, 124, 255, 0.19f, 1.24f);
+    glow(min.x + w * 0.84f, min.y + h * 0.02f, Dp(900.0f) * 0.5f, Dp(620.0f) * 0.5f, 255, 122, 61, 0.07f, 1.16f);
+    dl->PopClipRect();
+}
+
+void SectionHeading(const char* text) { // (Open Source Canvas's section label: no bar, no rule - the small capitals and the room under them)
+    ImGui::Dummy(ImVec2(0, Dp(2.0f)));
+    Eyebrow(text);
+    ImGui::Dummy(ImVec2(0, Dp(2.0f)));
+}
+
+// (fold buttons are drawn when the frame ends, over what their pane drew after them - a picture would cover them otherwise)
+struct PendingFold {
+    ImDrawList* dl;
+    ImVec2 c, clipMin, clipMax;
+    bool hov;
+};
+std::vector<PendingFold> g_folds;
+
+bool FoldButton(const char* id, const char* tip) {
+    ImGuiWindow* w = ImGui::GetCurrentWindow();
+    const float r = Dp(9.0f), pad = Dp(5.0f);
+    const ImVec2 back = ImGui::GetCursorScreenPos();
+    const ImVec2 c(w->InnerRect.Max.x - r - pad, w->InnerRect.Min.y + r + pad);
+    ImGui::SetCursorScreenPos(ImVec2(c.x - r, c.y - r));
+    const bool hit = ImGui::InvisibleButton(id, ImVec2(r * 2.0f, r * 2.0f));
+    const bool hov = ImGui::IsItemHovered();
+    if (hov && tip && *tip) ImGui::SetTooltip("%s", tip);
+    g_folds.push_back({ImGui::GetWindowDrawList(), c, w->InnerRect.Min, w->InnerRect.Max, hov});
+    ImGui::SetCursorScreenPos(back); // (the pane draws from where it was)
+    return hit;
+}
+
+void DrawPendingFoldButtons() {
+    for (const PendingFold& f : g_folds) {
+        f.dl->PushClipRect(f.clipMin, f.clipMax, false);
+        const float r = Dp(9.0f), a = r * 0.35f; // a "-": fold
+        f.dl->AddCircleFilled(f.c, r, f.hov ? ImGui::GetColorU32(kAccent) : IM_COL32(0, 0, 0, 140), 20);
+        f.dl->AddLine(ImVec2(f.c.x - a, f.c.y), ImVec2(f.c.x + a, f.c.y), IM_COL32(255, 255, 255, f.hov ? 255 : 200), Dp(1.6f));
+        f.dl->PopClipRect();
+    }
+    g_folds.clear();
+}
+
+bool FoldStrip(const char* id, const char* name, float width, float height) {
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool hit = ImGui::InvisibleButton(id, ImVec2(width, height));
+    const bool hov = ImGui::IsItemHovered();
+    if (hov) ImGui::SetTooltip("%s - click to show it again", name);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + width, p.y + height), hov ? IM_COL32(255, 255, 255, 26) : IM_COL32(255, 255, 255, 12), Dp(8.0f));
+    float y = p.y + Dp(12.0f);
+    for (const char* ch = name; *ch && y < p.y + height - ImGui::GetFontSize(); ++ch) { // (its name, a letter under the other)
+        const char s[2] = {*ch, 0};
+        dl->AddText(ImVec2(p.x + (width - ImGui::CalcTextSize(s).x) * 0.5f, y), ImGui::GetColorU32(hov ? ImGuiCol_Text : ImGuiCol_TextDisabled), s);
+        y += ImGui::GetFontSize() * (*ch == ' ' ? 0.6f : 0.95f);
+    }
+    return hit;
 }
 
 ImU32 WithAlpha(const ImVec4& c, float alpha) {

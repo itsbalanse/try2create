@@ -54,9 +54,15 @@ add_executable(Try2Create WIN32
     src/generate_ui.cpp
     src/character_story.cpp
     src/lora_sort.cpp
+    src/recycle_bin.cpp
+    src/splat_view.cpp
+    src/three_d_ui.cpp
     src/lora_browser.cpp
     src/apps_ui.cpp
+    src/paint_fill.cpp
     src/video_tools.cpp
+    src/video_fx.cpp
+    src/masked_swap.cpp
     src/workflow_ui.cpp
     src/board.cpp
     src/board_ui.cpp
@@ -77,6 +83,9 @@ add_executable(Try2Create WIN32
     src/design_ui.cpp
     src/video_ui.cpp
     src/story_ui.cpp
+    src/music_video.cpp
+    src/viggle_swap.cpp
+    src/library_ui.cpp
     src/music_ui.cpp
     src/music_lyrics.cpp
     src/cover_templates.cpp
@@ -132,4 +141,9 @@ endif()
 file(GLOB ORT_DLLS ${CMAKE_SOURCE_DIR}/vendor/onnxruntime/bin/*.dll)
 add_custom_command(TARGET Try2Create POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${ORT_DLLS} $<TARGET_FILE_DIR:Try2Create>
+)
+
+# The UI's fonts (Inter, Space Grotesk; SIL OFL 1.1, their licences with them) sit in a fonts folder next to the exe
+add_custom_command(TARGET Try2Create POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_SOURCE_DIR}/fonts $<TARGET_FILE_DIR:Try2Create>/fonts
 )

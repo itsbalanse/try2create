@@ -27,6 +27,7 @@ std::string FormatDuration(double seconds); // 0:05, 1:23, 1:02:03
 
 // ffmpeg.exe, when it is on the PATH (empty otherwise), and its probe of a file (length, size, frame rate).
 std::wstring FfmpegPath();
+std::wstring FindPhotocraft(const wchar_t* name); // photocraft-cli.exe or photocraft.exe in a tools\photocraft folder (any version folder): the app's data folder or next to the program
 VideoInfo ProbeVideoFfmpeg(const std::wstring& path);
 // Runs a command line without a window and collects its stdout (and stderr when `mergeStderr`).
 bool RunCaptureHidden(const std::wstring& cmdline, std::string& out, bool mergeStderr);

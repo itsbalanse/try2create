@@ -12,6 +12,7 @@ $version = '3.9.8'
 $url = "https://github.com/ukr8b3g-cmyk/ComfyUI-H3-Continuum/releases/download/v$version/ComfyUI-H3-Continuum-v$version.zip"
 $sha = '98daf8693d4ae89ec721979131491a7da10913b48218f235df098d5d7a737a45'
 $comfy = Join-Path $Install 'ComfyUI'
+if (Test-Path (Join-Path $Install 'main.py')) { $comfy = $Install } # (a git clone: main.py in the folder itself)
 if (-not $Nodes) { $Nodes = Join-Path $comfy 'custom_nodes' }
 
 function Say($text) {

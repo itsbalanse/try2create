@@ -2,7 +2,7 @@
 // each text, thing and character, with what each one is and says (MOSS's own "summary + items" JSON, bbox yxyx in pixels from the canvas
 // centre). The prompt writer plans the boxes from an idea (after the official MOSS-Image prompt-enhancer skill); you move, resize and reword them
 // on the canvas; MOSS draws it.
-// Tested 2026-10-18 (RTX 3090, the same designs and seeds): with boxes, MOSS 8-step (SFT + lodestones' DMD LoRA) put every line of a busy
+// Tested 2026-10-18 (24 GB card, the same designs and seeds): with boxes, MOSS 8-step (SFT + lodestones' DMD LoRA) put every line of a busy
 // magazine cover where it was asked and spelled it right in 3.5-5 s, in English and in Japanese; without boxes MOSS garbled the small print, and
 // Krea 2 wrote "GUPUS" and made up a Japanese magazine name. Short texts (a meme, a sale poster) came out right with all of them.
 // Editing: the same seed with one box reworded changed only that box; repainting only the changed boxes (a mask) keeps everything else exact,
@@ -1247,6 +1247,252 @@ int SendMossPrompt(AppState& app, const std::string& prompt, int w, int h, int t
     ComfyJob job;
     job.apiWorkflow = g.dump();
     job.label = "MOSS: " + prompt.substr(0, 48);
+    job.prompt = prompt;
+    job.times = std::max(1, times);
+    job.loras = loras;
+    job.seed = seed;
+    return SendComfyJob(app, std::move(job));
+}
+
+// Moody MOSS (moodyMossMix, a MOSS-Image finetune from Civitai) in diffusion_models: the newest such file ("" = none), looked at every 20 s
+std::string MoodyMossModel() {
+    static std::string found;
+    static double at = -1000.0;
+    if (ImGui::GetTime() - at < 20.0) return found;
+    at = ImGui::GetTime();
+    found.clear();
+    const std::wstring models = ComfyModelsDir();
+    std::error_code ec;
+    fs::file_time_type newest{};
+    for (const auto& e : fs::directory_iterator(fs::path(models) / L"diffusion_models", ec)) {
+        std::wstring n = e.path().filename().wstring();
+        for (wchar_t& c : n) c = static_cast<wchar_t>(towlower(c));
+        if (n.find(L"moodymoss") == std::wstring::npos || e.path().extension() != L".safetensors") continue;
+        const fs::file_time_type t = e.last_write_time(ec);
+        if (!found.empty() && t <= newest) continue;
+        const std::wstring w = e.path().filename().wstring();
+        std::string s(static_cast<size_t>(WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr)), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), s.data(), static_cast<int>(s.size()), nullptr, nullptr);
+        newest = t, found = s;
+    }
+    return found;
+}
+
+// Generate's Moody MOSS: its maker's settings - 25 steps, CFG 3.5, euler / simple - with an empty negative, MOSS's own text encoder and VAE.
+// Tested 2026-10-29 (24 GB card, 880 x 1184, a rainy-street photo with a sign): darker and more cinematic than MOSS-SFT, the sign spelled right;
+// 43 s with it loaded against SFT's 21 s (an fp8 file: a 24 GB card has no fp8 of its own); skip-layer guidance made no difference, so it is left out
+int SendMoodyMossPrompt(AppState& app, const std::string& prompt, int w, int h, int times, const std::vector<LoraEntry>& loras, long long seed) {
+    const std::string unet = MoodyMossModel();
+    if (unet.empty()) return 0;
+    json g;
+    auto node = [&](const char* id, const char* cls, json inputs) { g[id] = {{"class_type", cls}, {"inputs", std::move(inputs)}, {"_meta", {{"title", cls}}}}; };
+    node("1", "UNETLoader", {{"unet_name", unet}, {"weight_dtype", "default"}});
+    node("3", "CLIPLoader", {{"clip_name", kTe.name}, {"type", "moss_image"}, {"device", "default"}});
+    node("4", "VAELoader", {{"vae_name", kVae.name}});
+    node("5", "CLIPTextEncode", {{"clip", json::array({"3", 0})}, {"text", prompt}});
+    node("6", "CLIPTextEncode", {{"clip", json::array({"3", 0})}, {"text", ""}});
+    node("7", "EmptyFlux2LatentImage", {{"width", w}, {"height", h}, {"batch_size", 1}});
+    node("8", "KSampler", {{"model", json::array({"1", 0})}, {"positive", json::array({"5", 0})}, {"negative", json::array({"6", 0})}, {"latent_image", json::array({"7", 0})},
+                           {"seed", 1}, {"steps", 25}, {"cfg", 3.5}, {"sampler_name", "euler"}, {"scheduler", "simple"}, {"denoise", 1.0}});
+    node("9", "VAEDecode", {{"samples", json::array({"8", 0})}, {"vae", json::array({"4", 0})}});
+    node("10", "SaveImage", {{"images", json::array({"9", 0})}, {"filename_prefix", "Generate/moodymoss"}});
+    ComfyJob job;
+    job.apiWorkflow = g.dump();
+    job.label = "Moody MOSS: " + prompt.substr(0, 48);
+    job.prompt = prompt;
+    job.times = std::max(1, times);
+    job.loras = loras; // (MOSS LoRAs fit it: it is a MOSS-Image finetune)
+    job.seed = seed;
+    return SendComfyJob(app, std::move(job));
+}
+
+// The MOSS color-depth control (darask0/MOSS-Image-color-depth-control, Apache-2.0) in loras: its file ("" = none), looked at every 20 s
+std::string MossDepthControlLora() {
+    static std::string found;
+    static double at = -1000.0;
+    if (ImGui::GetTime() - at < 20.0) return found;
+    at = ImGui::GetTime();
+    found.clear();
+    const fs::path loras = fs::path(ComfyModelsDir()) / L"loras";
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(loras, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+        std::wstring n = it->path().filename().wstring();
+        for (wchar_t& c : n) c = static_cast<wchar_t>(towlower(c));
+        if (n.find(L"moss") == std::wstring::npos || n.find(L"control") == std::wstring::npos || it->path().extension() != L".safetensors") continue;
+        const std::wstring rel = fs::relative(it->path(), loras, ec).wstring();
+        found.assign(static_cast<size_t>(WideCharToMultiByte(CP_UTF8, 0, rel.c_str(), static_cast<int>(rel.size()), nullptr, 0, nullptr, nullptr)), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, rel.c_str(), static_cast<int>(rel.size()), found.data(), static_cast<int>(found.size()), nullptr, nullptr);
+        break;
+    }
+    return found;
+}
+
+// MOSS (SFT, or Moody MOSS) drawing on the layout of a picture: MoGe 2 (ComfyUI's own nodes, its model in geometry_estimation) makes the
+// picture's depth map (near = white, as the control wants), the control LoRA + MOSSImageControl make MOSS follow its placement, scale and pose;
+// everything else comes from the prompt. The size is the picture's shape at about a megapixel.
+// Tested 2026-10-29 (24 GB card): a woman in a greenhouse -> the old fisherman in her exact place and turn, the fern and the lights where they
+// were (22 s); the girl dancing -> a proper Peach in her pose (MOSS from words alone had made a dress with no head); a drawn mannequin from the
+// pose library -> a woman sitting on a beach in exactly its pose. The control on for the whole run (end 1.0, the card's setting for real
+// pictures); for a drawn mannequin 0.5, so it does not come out mannequin-like.
+int SendMossLayoutPrompt(AppState& app, bool moody, const std::string& prompt, const std::wstring& layout, bool drawn, int times,
+                         const std::vector<LoraEntry>& loras, long long seed) {
+    const std::string unet = moody ? MoodyMossModel() : std::string(kSft.name), control = MossDepthControlLora();
+    if (unet.empty() || control.empty()) return 0;
+    json g;
+    auto node = [&](const char* id, const char* cls, json inputs) { g[id] = {{"class_type", cls}, {"inputs", std::move(inputs)}, {"_meta", {{"title", cls}}}}; };
+    auto L = [](const char* id, int k = 0) { return json::array({id, k}); };
+    node("20", "LoadImage", {{"image", "@layout"}});
+    node("21", "ImageScaleToTotalPixels", {{"image", L("20")}, {"upscale_method", "lanczos"}, {"megapixels", 1.0}, {"resolution_steps", 16}});
+    node("22", "LoadMoGeModel", {{"model_name", "moge_2_vitl_normal_fp16.safetensors"}});
+    node("23", "MoGeInference", {{"moge_model", L("22")}, {"image", L("21")}, {"resolution_level", 9}, {"fov_x_degrees", 0.0}, {"batch_size", 4}, {"force_projection", true},
+                                 {"apply_mask", true}, {"refine_steps", 3}}); // (ComfyUI's defaults, as tested)
+    node("24", "MoGeRender", {{"moge_geometry", L("23")}, {"output", "depth"}});
+    node("25", "GetImageSize", {{"image", L("21")}});
+    node("1", "UNETLoader", {{"unet_name", unet}, {"weight_dtype", "default"}});
+    node("2", "LoraLoaderModelOnly", {{"model", L("1")}, {"lora_name", control}, {"strength_model", 1.0}});
+    json model = L("2");
+    if (!moody) { // (MOSS-SFT's Best: the negative branch without layer 22)
+        node("11", "SkipLayerGuidanceDiTSimple", {{"model", L("2")}, {"double_layers", ""}, {"single_layers", "22"}, {"start_percent", 0.0}, {"end_percent", 1.0}});
+        model = L("11");
+    }
+    node("3", "CLIPLoader", {{"clip_name", kTe.name}, {"type", "moss_image"}, {"device", "default"}});
+    node("4", "VAELoader", {{"vae_name", kVae.name}});
+    node("5", "CLIPTextEncode", {{"clip", L("3")}, {"text", prompt}});
+    node("6", "CLIPTextEncode", {{"clip", L("3")}, {"text", ""}});
+    node("26", "MOSSImageControl", {{"positive", L("5")}, {"negative", L("6")}, {"vae", L("4")}, {"strength", 1.0}, {"start_percent", 0.0},
+                                    {"end_percent", drawn ? 0.5 : 1.0}, {"depth_map", L("24")}});
+    node("7", "EmptyFlux2LatentImage", {{"width", L("25", 0)}, {"height", L("25", 1)}, {"batch_size", 1}});
+    node("8", "KSampler", {{"model", model}, {"positive", L("26", 0)}, {"negative", L("26", 1)}, {"latent_image", L("7")}, {"seed", 1}, {"steps", 25},
+                           {"cfg", moody ? 3.5 : 3.0}, {"sampler_name", "euler"}, {"scheduler", "simple"}, {"denoise", 1.0}});
+    node("9", "VAEDecode", {{"samples", L("8")}, {"vae", L("4")}});
+    node("10", "SaveImage", {{"images", L("9")}, {"filename_prefix", moody ? "Generate/moodymoss_layout" : "Generate/moss_layout"}});
+    ComfyJob job;
+    job.apiWorkflow = g.dump();
+    job.rawUploads = {{"@layout", layout}};
+    job.label = std::string(moody ? "Moody MOSS" : "MOSS") + " (layout): " + prompt.substr(0, 40);
+    job.prompt = prompt;
+    job.times = std::max(1, times);
+    job.loras = loras;
+    job.seed = seed;
+    return SendComfyJob(app, std::move(job));
+}
+
+namespace {
+// A file in ComfyUI's models/<sub> whose name has all of `words` (lower case), as a name relative to that folder ("" = none); looked at every 20 s
+std::string FindModelFile(const wchar_t* sub, std::initializer_list<const wchar_t*> words, std::string& found, double& at) {
+    if (ImGui::GetTime() - at < 20.0) return found;
+    at = ImGui::GetTime();
+    found.clear();
+    const fs::path dir = fs::path(ComfyModelsDir()) / sub;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec)) {
+        std::wstring n = it->path().filename().wstring();
+        for (wchar_t& c : n) c = static_cast<wchar_t>(towlower(c));
+        bool all = it->path().extension() == L".safetensors";
+        for (const wchar_t* w : words) all = all && n.find(w) != std::wstring::npos;
+        if (!all) continue;
+        const std::wstring rel = fs::relative(it->path(), dir, ec).wstring();
+        found.assign(static_cast<size_t>(WideCharToMultiByte(CP_UTF8, 0, rel.c_str(), static_cast<int>(rel.size()), nullptr, 0, nullptr, nullptr)), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, rel.c_str(), static_cast<int>(rel.size()), found.data(), static_cast<int>(found.size()), nullptr, nullptr);
+        break;
+    }
+    return found;
+}
+
+// The layout's depth (MoGe 2, near = white) at about a megapixel in steps of 32: "21" is the scaled picture, "24" its depth, "25" its size
+void DepthNodes(json& g, const char* image) {
+    auto node = [&](const char* id, const char* cls, json inputs) { g[id] = {{"class_type", cls}, {"inputs", std::move(inputs)}}; };
+    auto L = [](const char* id, int k = 0) { return json::array({id, k}); };
+    node("20", "LoadImage", {{"image", image}});
+    node("21", "ImageScaleToTotalPixels", {{"image", L("20")}, {"upscale_method", "lanczos"}, {"megapixels", 1.0}, {"resolution_steps", 32}});
+    node("22", "LoadMoGeModel", {{"model_name", "moge_2_vitl_normal_fp16.safetensors"}});
+    node("23", "MoGeInference", {{"moge_model", L("22")}, {"image", L("21")}, {"resolution_level", 9}, {"fov_x_degrees", 0.0}, {"batch_size", 4}, {"force_projection", true},
+                                 {"apply_mask", true}, {"refine_steps", 3}});
+    node("24", "MoGeRender", {{"moge_geometry", L("23")}, {"output", "depth"}});
+    node("25", "GetImageSize", {{"image", L("21")}});
+}
+} // namespace
+
+std::string QwenDepthControl() {
+    static std::string found;
+    static double at = -1000.0;
+    return FindModelFile(L"model_patches", {L"qwen_image_2.1", L"controlnet_union"}, found, at);
+}
+std::string KreaDepthControlLora() {
+    static std::string found;
+    static double at = -1000.0;
+    return FindModelFile(L"loras", {L"krea2", L"depth"}, found, at);
+}
+
+// Qwen Image 2.1 on a picture's layout (2026-10-30): alibaba-pai's Fun ControlNet Union (Kijai's int8, models/model_patches) with the MoGe depth,
+// through ComfyUI's QwenImageDiffsynthControlnet. Tested on library pose drawings: the drawing given as lineart drew the mannequin itself;
+// its depth at strength 1 kept the pose but the mannequin showed through (joint balls on the knees, body-paint people); strength 0.7 letting
+// go at 60% kept the pose and drew real people in the prompt's clothes (a woman in a red dress on a beach; a knight in armour and a princess
+// in a blue gown in pose pair60_P001). A photo's depth: its layout kept at full strength. Turbo GGUF, 6 steps, about 20 s on a 24 GB card.
+int SendQwenDepthPrompt(AppState& app, const std::string& prompt, const std::wstring& layout, bool drawn, int times, const std::vector<LoraEntry>& loras,
+                        long long seed) {
+    const std::string control = QwenDepthControl();
+    if (control.empty()) return 0;
+    std::string unet = app.comfy.editUnet.empty() ? std::string("qwen_image_2.1_turbo_Q8_0.gguf") : app.comfy.editUnet;
+    std::string low = unet;
+    for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const bool gguf = low.size() > 5 && low.compare(low.size() - 5, 5, ".gguf") == 0, turbo = low.find("turbo") != std::string::npos;
+    json g;
+    auto node = [&](const char* id, const char* cls, json inputs) { g[id] = {{"class_type", cls}, {"inputs", std::move(inputs)}}; };
+    auto L = [](const char* id, int k = 0) { return json::array({id, k}); };
+    DepthNodes(g, "@layout");
+    if (gguf) node("1", "UnetLoaderGGUF", {{"unet_name", unet}});
+    else node("1", "UNETLoader", {{"unet_name", unet}, {"weight_dtype", "default"}});
+    node("2", "CLIPLoader", {{"clip_name", "qwen3vl_8b_int8_convrot.safetensors"}, {"type", "qwen_image"}, {"device", "default"}});
+    node("3", "VAELoader", {{"vae_name", "qwen_image_2.1_vae_bf16.safetensors"}});
+    node("4", "ModelPatchLoader", {{"name", control}});
+    node("5", "QwenImageDiffsynthControlnet", {{"model", L("1")}, {"model_patch", L("4")}, {"vae", L("3")}, {"image", L("24")}, {"strength", drawn ? 0.7 : 1.0},
+                                               {"start_percent", 0.0}, {"end_percent", drawn ? 0.6 : 0.8}});
+    node("6", "TextEncodeQwenImage21", {{"clip", L("2")}, {"vae", L("3")}, {"prompt", prompt}, {"negative_prompt", ""}, {"resolution", 1024}});
+    node("7", "EmptyLatentImage", {{"width", L("25", 0)}, {"height", L("25", 1)}, {"batch_size", 1}});
+    node("8", "KSampler", {{"model", L("5")}, {"positive", L("6", 0)}, {"negative", L("6", 1)}, {"latent_image", L("7")}, {"seed", 1}, {"steps", turbo ? 6 : 25},
+                           {"cfg", 1.0}, {"sampler_name", turbo ? "euler" : "res_multistep"}, {"scheduler", turbo ? "simple" : "beta"}, {"denoise", 1.0}});
+    node("9", "VAEDecode", {{"samples", L("8")}, {"vae", L("3")}});
+    node("10", "SaveImage", {{"images", L("9")}, {"filename_prefix", "Generate/qwen_layout"}});
+    ComfyJob job;
+    job.apiWorkflow = g.dump();
+    job.rawUploads = {{"@layout", layout}};
+    job.label = "Qwen 2.1 (layout): " + prompt.substr(0, 40);
+    job.prompt = prompt;
+    job.times = std::max(1, times);
+    job.loras = loras;
+    job.seed = seed;
+    return SendComfyJob(app, std::move(job));
+}
+
+// Krea 2 on a picture's layout (2026-10-30): Patil's depth control LoRA (rank 64 + a widened input projection; Krea 2 Community License) with the
+// MoGe depth, through comfyui-gguf-loader's Krea2ControlLoRALoader + Krea2Img2Img (manual control image, grayscale, per-image min-max). Tested at
+// strength 1 (8 steps, 10-16 s): pose P006 exactly, a real woman in a red dress (no mannequin traces, unlike Qwen at full strength); pair60_P001
+// as a knight and a princess (some armour bled onto her raised leg); a photo's depth -> a man in a grey suit in the woman's place and lean.
+int SendKreaDepthPrompt(AppState& app, const std::string& prompt, const std::wstring& layout, bool drawn, int times, const std::vector<LoraEntry>& loras,
+                        long long seed) {
+    const std::string control = KreaDepthControlLora(), krea = GenerateKreaModel();
+    if (control.empty() || krea.empty()) return 0;
+    json g;
+    auto node = [&](const char* id, const char* cls, json inputs) { g[id] = {{"class_type", cls}, {"inputs", std::move(inputs)}}; };
+    auto L = [](const char* id, int k = 0) { return json::array({id, k}); };
+    DepthNodes(g, "@layout");
+    node("1", "UNETLoader", {{"unet_name", krea}, {"weight_dtype", "default"}});
+    node("2", "CLIPLoader", {{"clip_name", "qwen3vl_4b_fp8_scaled.safetensors"}, {"type", "krea2"}, {"device", "default"}});
+    node("3", "VAELoader", {{"vae_name", "qwen_image_vae.safetensors"}});
+    node("4", "Krea2ControlLoRALoader", {{"model", L("1")}, {"lora_name", control}, {"strength", 1.0}});
+    node("5", "Krea2Img2Img", {{"model", L("4")}, {"clip", L("2")}, {"vae", L("3")}, {"prompt", prompt}, {"negative_prompt", ""}, {"strength", 1.0}, {"batch_size", 1},
+                               {"width", L("25", 0)}, {"height", L("25", 1)}, {"control_mode", "manual"}, {"control_image", L("24")},
+                               {"control_channel_mode", "grayscale"}, {"control_normalize", "per_image_minmax"}, {"control_invert", false}});
+    node("6", "ConditioningZeroOut", {{"conditioning", L("5", 1)}});
+    node("8", "KSampler", {{"model", L("5", 0)}, {"positive", L("5", 1)}, {"negative", L("6")}, {"latent_image", L("5", 3)}, {"seed", 1}, {"steps", 8}, {"cfg", 1.0},
+                           {"sampler_name", "euler"}, {"scheduler", "simple"}, {"denoise", 1.0}});
+    node("9", "VAEDecode", {{"samples", L("8")}, {"vae", L("3")}});
+    node("10", "SaveImage", {{"images", L("9")}, {"filename_prefix", "Generate/krea_layout"}});
+    ComfyJob job;
+    job.apiWorkflow = g.dump();
+    job.rawUploads = {{"@layout", layout}};
+    job.label = "Krea 2 (layout): " + prompt.substr(0, 40);
     job.prompt = prompt;
     job.times = std::max(1, times);
     job.loras = loras;

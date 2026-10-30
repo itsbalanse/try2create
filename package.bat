@@ -1,7 +1,7 @@
 @echo off
 rem ---------------------------------------------------------------------------
 rem  Assembles a clean, copy-and-run folder (and zip) in dist\ with only what
-rem  the app needs: the exe, the ONNX Runtime DLLs, the model and the README.
+rem  the app needs: the exe, the ONNX Runtime DLLs, fonts, tools and the README.
 rem  Run build.bat first.
 rem ---------------------------------------------------------------------------
 setlocal
@@ -23,6 +23,12 @@ if exist models (
     for %%f in (models\nsfw.onnx models\nsfw.json models\people.onnx models\people.json models\people.README.txt models\aesthetic_clip.onnx models\aesthetic_anime.onnx models\aesthetic.json models\aesthetic.README.txt) do if exist "%%f" copy /y "%%f" "%OUT%\models\" >nul
 )
 
+if exist fonts xcopy /e /i /q /y fonts "%OUT%\fonts" >nul
+if exist tools xcopy /e /i /q /y tools "%OUT%\tools" >nul
+for %%f in (LICENSE THIRD_PARTY_NOTICES.txt) do (
+    if exist "%%f" copy /y "%%f" "%OUT%\" >nul
+)
+
 powershell -NoProfile -Command "Compress-Archive -Path '%OUT%\*' -DestinationPath '%~dp0dist\Try2Create.zip' -Force"
 echo.
 echo Folder: %OUT%

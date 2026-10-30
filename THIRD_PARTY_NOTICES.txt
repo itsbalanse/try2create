@@ -28,7 +28,15 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-tools/photocraft holds PhotoCraft 0.6.0 (https://github.com/storytold/photocraft), an unmodified release by Learning Machines Inc / storytold, used under the MIT or Apache-2.0 licence (its LICENSE-MIT and LICENSE-APACHE files are in that folder). This app runs its photocraft-cli program.
+The setup can download PhotoCraft 0.6.0 (https://github.com/storytold/photocraft), an unmodified release by Learning Machines Inc / storytold, under the MIT or Apache-2.0 licence (its licence files come with it). This app runs its photocraft-cli program.
+
+tools/openjutsu holds workflows from Openjutsu (https://github.com/D3voz/openjutsu), MIT licence, Copyright (c) 2026 D3voz: see tools/openjutsu/LICENSE.txt.
+
+fonts/ holds Inter and Space Grotesk, each under the SIL Open Font License 1.1 (fonts/Inter-LICENSE.txt, fonts/SpaceGrotesk-OFL.txt).
+
+Parts of the look and some features follow these MIT projects: Open Source Canvas (https://github.com/raph651/open-source-canvas: colours and design), Freefield (https://github.com/neuregex/freefield: template apps and style presets), NVAI-open (https://github.com/Mantux775/NVAI-open: measured LTX-2.5 settings and the fill method).
+
+Node packs are not part of this repository. A page's Set up button fetches the ones it needs into your ComfyUI when you press it, each under its own licence, for example ComfyUI-H3-Motion-Context-MultiRef (GPL-3.0, used only as ComfyUI nodes).
 
 
 Libraries in vendor/ (each under its own licence; their licence texts are in their folders or headers):

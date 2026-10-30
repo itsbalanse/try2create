@@ -21,6 +21,13 @@ inline ImVec4 kTextDim{0.55f, 0.59f, 0.66f, 1.00f};
 void Init(float scale, bool light = false);
 bool IsLight();
 
+// The accent colour (2026-10-30, after Open Source Canvas's eight - MIT, raph651/open-source-canvas): set it before Init.
+int AccentCount();
+const char* AccentName(int i);
+ImVec4 AccentSwatch(int i);
+void SetAccentIndex(int i);
+int AccentIndex();
+
 // Theme-dependent colours for custom-drawn widgets.
 ImVec4 ViewerBackground();
 ImU32 ThumbPlaceholder();
@@ -34,6 +41,10 @@ inline float Dp(float v) { return v * Scale(); } // device-independent px -> px
 ImFont* BoldFont();                   // falls back to the regular font
 ImFont* TitleFont();                  // large semibold face for headings
 ImFont* DisplayFont();                // very large semibold face (a song's title): drawn smaller it stays smooth
+ImFont* MonoFont();                   // small monospace face for labels and badges (Cascadia Mono / Consolas)
+
+// A small, spaced-out monospace label in capitals ("REFERENCES"): the section label of Open Source Canvas's design
+void Eyebrow(const char* text, const ImVec4* color = nullptr);
 
 // Filled accent-coloured button for the main action of a dialog.
 bool PrimaryButton(const char* label, const ImVec2& size = ImVec2(0, 0));
@@ -47,8 +58,19 @@ void HelpMarker(const char* text);
 // Small rounded label drawn inline (advances the layout like a widget).
 void Pill(const char* text, ImU32 background, ImU32 foreground);
 
-// Bold dim heading with a hairline underneath.
+// A section's label: an Eyebrow on its own line, with room under it.
 void SectionHeading(const char* text);
+
+// Folding a side pane away (2026-10-30): FoldButton is a small round button in the current window's top-right corner (call it first
+// thing in the pane, so it wins the mouse over the pane's own widgets); true when clicked. A folded pane is a FoldStrip: a thin strip
+// with its name down it, true when clicked (unfold).
+bool FoldButton(const char* id, const char* tip);
+bool FoldStrip(const char* id, const char* name, float width, float height);
+void DrawPendingFoldButtons(); // once a frame, just before ImGui::Render (draws the fold buttons over their panes)
+
+// The page's backdrop (night theme): Open Source Canvas's soft glows - blue from the top left, a little warm light at the top right - drawn
+// into `dl` over the window's own background, before anything else.
+void DrawBackdrop(ImDrawList* dl, ImVec2 min, ImVec2 max);
 
 // Colour `c` as a packed ImU32 with the given alpha.
 ImU32 WithAlpha(const ImVec4& c, float alpha);

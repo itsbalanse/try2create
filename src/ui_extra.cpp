@@ -27,6 +27,8 @@
 
 namespace fs = std::filesystem;
 
+bool g_boxSelecting = false;
+
 namespace {
 
 std::string ToUtf8(const std::wstring& w) {
@@ -788,6 +790,26 @@ bool DrawAppearanceWindow(AppState& app) {
         if (ImGui::RadioButton("Dark", &theme, 0)) { app.lightTheme = false; changed = true; }
         ImGui::SameLine();
         if (ImGui::RadioButton("Light", &theme, 1)) { app.lightTheme = true; changed = true; }
+
+        ImGui::Spacing();
+        ui::SectionHeading("ACCENT");
+        for (int i = 0; i < ui::AccentCount(); ++i) { // (a round swatch for each; the chosen one ringed)
+            if (i) ImGui::SameLine(0, ui::Dp(6.0f));
+            ImGui::PushID(i);
+            const float d = ui::Dp(26.0f);
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            if (ImGui::InvisibleButton("##accent", ImVec2(d, d)) && app.accent != i) app.accent = i, changed = true;
+            const bool hov = ImGui::IsItemHovered();
+            if (hov) ImGui::SetTooltip("%s", ui::AccentName(i));
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const ImVec2 c(p.x + d * 0.5f, p.y + d * 0.5f);
+            dl->AddCircleFilled(c, d * 0.5f - ui::Dp(4.0f), ImGui::GetColorU32(ui::AccentSwatch(i)), 24);
+            if (app.accent == i || hov) dl->AddCircle(c, d * 0.5f - ui::Dp(1.0f), ImGui::GetColorU32(app.accent == i ? ImGuiCol_Text : ImGuiCol_TextDisabled), 24, ui::Dp(1.5f));
+            ImGui::PopID();
+        }
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%s", ui::AccentName(app.accent));
 
         ImGui::Spacing();
         ui::SectionHeading("INTERFACE SIZE");
@@ -2262,6 +2284,7 @@ void DrawVisionLibrary(AppState& app, float height) {
         if (!banding && rectOf && ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
             io.MousePos.x < wp.x + ww - style.ScrollbarSize - 2.0f) {
             banding = true;
+            g_boxSelecting = true;
             moved = false;
             bandStart = ImVec2(io.MousePos.x - origin0.x, io.MousePos.y - origin0.y);
             bandBase = (io.KeyCtrl || io.KeyShift) ? g_libMulti : std::set<std::wstring>();

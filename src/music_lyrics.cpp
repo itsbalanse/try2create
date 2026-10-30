@@ -429,6 +429,26 @@ std::string LyricsFromSongFile(const std::wstring& song) {
     return {};
 }
 
+std::string HearSongLyrics(const std::wstring& song, const std::wstring& outSrt) {
+    const std::wstring model = WhisperModelPath(), ff = FfmpegPath();
+    if (model.empty()) return "no whisper model (Sound page: Get it)";
+    if (ff.empty()) return "ffmpeg.exe was not found";
+    std::error_code ec;
+    fs::create_directories(fs::path(outSrt).parent_path(), ec);
+    const std::wstring part = outSrt + L".part";
+    fs::remove(part, ec);
+    std::string log;
+    RunCaptureHidden(L"\"" + ff + L"\" -hide_banner -loglevel error -i \"" + song + L"\" -vn -af \"whisper=model=" + Wide(FilterPath(model)) +
+                         L":language=auto:queue=20:format=srt:destination=" + Wide(FilterPath(part)) + L"\" -f null -",
+                     log, true);
+    if (ReadSrt(part).empty()) {
+        fs::remove(part, ec);
+        return "whisper heard nothing" + (log.empty() ? std::string() : ": " + log.substr(0, 160));
+    }
+    fs::rename(part, outSrt, ec);
+    return ec ? "could not keep what it heard" : std::string();
+}
+
 std::string AddLyricsToSong(const std::wstring& song, const std::string& lyrics, const std::string& title) {
     const std::vector<std::string> lines = SungLyricLines(lyrics);
     if (lines.empty()) return "no sung lines (an instrumental)";

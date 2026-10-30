@@ -118,7 +118,7 @@ bool Http(const Endpoint& ep, const wchar_t* method, const std::wstring& path, c
                     DWORD got = 0;
                     if (!WinHttpReadData(req, chunk.data(), avail, &got) || got == 0) break;
                     response.append(chunk, 0, got);
-                    if (response.size() > 32u * 1024 * 1024) break;
+                    if (response.size() > 128u * 1024 * 1024) break;
                 }
                 ok = true;
             } else if (error) {
@@ -940,12 +940,24 @@ std::wstring ComfyInstallDir() {
     return FindHeadless(h) ? h.workDir : std::wstring();
 }
 
+static std::wstring AppDirOf(const HeadlessLaunch& h) { return h.mainPy == L"main.py" ? h.workDir : h.workDir + L"\\ComfyUI"; }
+
+std::wstring ComfyAppDir() {
+    HeadlessLaunch h;
+    return FindHeadless(h) ? AppDirOf(h) : std::wstring();
+}
+
+std::wstring ComfyPython() {
+    HeadlessLaunch h;
+    return FindHeadless(h) ? h.python : std::wstring();
+}
+
 std::wstring ComfyInputDir() {
     const std::wstring test = EnvW(L"MV_COMFY_INPUT");
     if (!test.empty()) return test;
     HeadlessLaunch h;
     if (!FindHeadless(h)) return {};
-    return h.inputDir.empty() ? h.workDir + L"\\ComfyUI\\input" : h.inputDir;
+    return h.inputDir.empty() ? AppDirOf(h) + L"\\input" : h.inputDir;
 }
 
 // ---- the browser bridge
@@ -1019,9 +1031,9 @@ app.registerExtension({
 std::wstring BridgeDir() {
     std::wstring nodes = EnvW(L"MV_COMFY_NODES"); // (tests: a custom_nodes folder of their own)
     if (nodes.empty()) {
-        const std::wstring install = ComfyInstallDir();
-        if (install.empty()) return {};
-        nodes = install + L"\\ComfyUI\\custom_nodes";
+        const std::wstring app = ComfyAppDir();
+        if (app.empty()) return {};
+        nodes = app + L"\\custom_nodes";
     }
     return nodes + L"\\try2create_bridge";
 }
@@ -1159,6 +1171,18 @@ bool ComfyGenerationTime(const std::wstring& file, double& seconds, std::string*
     return seconds > 0;
 }
 
+void ComfyMoveGenerationTime(const std::wstring& from, const std::wstring& to) {
+    std::lock_guard<std::mutex> lock(g_timesMutex);
+    LoadTimes();
+    const auto it = g_times.find(TimeKey(from));
+    if (it == g_times.end()) return;
+    const json kept = *it;
+    g_times.erase(TimeKey(from));
+    g_times[TimeKey(to)] = kept;
+    std::ofstream f(TimesPath(), std::ios::binary | std::ios::trunc);
+    if (f) f << g_times.dump(0, ' ', false, json::error_handler_t::replace);
+}
+
 std::string FormatTook(double seconds) {
     const long long s = std::llround(std::max(0.0, seconds));
     char buf[32];
@@ -1271,6 +1295,7 @@ std::wstring ComfyOutputDir(const ComfySettings& s) {
 }
 
 bool ComfyOwned() {
+    if (GetEnvironmentVariableW(L"MV_TEST_COMFYLOG", nullptr, 0) > 0) return true; // (tests: my own ComfyUI, its log named there)
     std::lock_guard<std::mutex> lock(g_comfyMutex);
     return g_comfyProcess && WaitForSingleObject(g_comfyProcess, 0) == WAIT_TIMEOUT;
 }
@@ -1416,17 +1441,17 @@ bool ComfyStart(const ComfySettings& s, std::string& message) {
         // shuffles memory (2-4x slower, worse when another app or a game takes some). Keeping a few GB free costs almost nothing.
         if (s.vramHeadroom > 0 && h.args.find("--vram-headroom") == std::string::npos) {
             std::string cli;
-            if (ReadFileBytes(h.workDir + L"\\ComfyUI\\comfy\\cli_args.py", cli) && cli.find("\"--vram-headroom\"") != std::string::npos) { // an unknown flag stops ComfyUI
+            if (ReadFileBytes(AppDirOf(h) + L"\\comfy\\cli_args.py", cli) && cli.find("\"--vram-headroom\"") != std::string::npos) { // an unknown flag stops ComfyUI
                 wchar_t gb[32];
                 swprintf(gb, 32, L" --vram-headroom %.1f", s.vramHeadroom);
                 cmd += gb;
             }
         }
         // Its RAM-pressure cache keeps models, pinned copies and results until only 10 GB is free: Make it crisp (H3 + its 10 GB LoRA + the
-        // 32B text encoder) took a 128 GB PC to 123 GB on 2026-10-28. With more headroom it lets go between nodes, well before Windows pages.
+        // 32B text encoder) took a big PC nearly to its limit on 2026-10-28. With more headroom it lets go between nodes, well before Windows pages.
         if (s.ramHeadroom > 0 && h.args.find("--cache-") == std::string::npos) {
             std::string cli;
-            if (ReadFileBytes(h.workDir + L"\\ComfyUI\\comfy\\cli_args.py", cli) && cli.find("\"--cache-ram\"") != std::string::npos) {
+            if (ReadFileBytes(AppDirOf(h) + L"\\comfy\\cli_args.py", cli) && cli.find("\"--cache-ram\"") != std::string::npos) {
                 MEMORYSTATUSEX ms = {sizeof(ms)};
                 GlobalMemoryStatusEx(&ms);
                 const double total = ms.ullTotalPhys / 1073741824.0; // (never more than a third of the RAM: a 32 GB PC keeps about 11)
@@ -1555,7 +1580,7 @@ bool LoadComfySettings(ComfySettings& s) {
     if (j.contains("editLoras")) readLoras(j["editLoras"], s.editLoras);
     else if (j.contains("editLora")) { // an older settings file: its one LoRA
         s.editLoras.clear();
-        s.editLoras.push_back({j.value("editLoraName", std::string("qwen2.1fun.safetensors")), std::clamp(j.value("editLoraStrength", 0.7), 0.0, 2.0), j.value("editLora", true)});
+        s.editLoras.push_back({j.value("editLoraName", std::string()), std::clamp(j.value("editLoraStrength", 0.7), 0.0, 2.0), j.value("editLora", true)});
     }
     if (j.contains("promptLoras")) readLoras(j["promptLoras"], s.promptLoras);
     s.promptReplaceLoras = j.value("promptReplaceLoras", s.promptReplaceLoras);
@@ -1565,6 +1590,7 @@ bool LoadComfySettings(ComfySettings& s) {
     if (j.contains("mossLoras")) readLoras(j["mossLoras"], s.mossLoras);
     if (j.contains("h3Loras")) readLoras(j["h3Loras"], s.h3Loras);
     s.editSteps = std::clamp(j.value("editSteps", s.editSteps), 1, 200);
+    s.editEngine = j.value("editEngine", s.editEngine) == "qwen" ? "qwen" : "flux3";
     s.editResolution = std::clamp(j.value("editResolution", s.editResolution), 0, 4096);
     s.outputDir = ToWide(j.value("outputDir", std::string()));
     s.comfyFolder = ToWide(j.value("comfyFolder", std::string()));
@@ -1573,10 +1599,6 @@ bool LoadComfySettings(ComfySettings& s) {
     s.pixelModels = ToWide(j.value("pixelModels", std::string()));
     s.promptNode = j.value("promptNode", std::string());
     s.negativeNode = j.value("negativeNode", std::string());
-    if (j.value("editModelRev", 0) < 2) { // picture editing moved to Qwen Image 2.1 Turbo (GGUF): switched once, the picker can switch back
-        s.editUnet = "qwen_image_2.1_turbo_Q8_0.gguf";
-        if (s.editSteps > 10) s.editSteps = 6;
-    }
     return true;
 }
 
@@ -1588,7 +1610,7 @@ void SaveComfySettings(const ComfySettings& s) {
     };
     json j = {{"url", s.url}, {"useLastRun", s.useLastRun}, {"savedWorkflow", s.savedWorkflow}, {"autoImport", s.autoImport}, {"workflow", ToUtf8(s.workflowPath)}, {"randomSeed", s.randomSeed}, {"sendNegative", s.sendNegative},
               {"sendPicture", s.sendPicture}, {"count", s.count}, {"videoLength", s.videoLength}, {"defaultFps", s.defaultFps}, {"autoStart", s.autoStart},
-              {"closeWithApp", s.closeWithApp}, {"loraTriggers", s.loraTriggers}, {"vramHeadroom", s.vramHeadroom}, {"ramHeadroom", s.ramHeadroom}, {"background", s.background}, {"showWindow", s.showWindow}, {"startMode", s.startMode}, {"editStyle", s.editStyle}, {"editJump", s.editJump}, {"directOutfit", s.directOutfit}, {"directPose", s.directPose}, {"directExpression", s.directExpression}, {"editUnet", s.editUnet}, {"editModelRev", 2}, {"editLoras", lorasJson(s.editLoras)}, {"promptLoras", lorasJson(s.promptLoras)}, {"promptReplaceLoras", s.promptReplaceLoras}, {"upscaleLoras", lorasJson(s.upscaleLoras)}, {"kreaLoras", lorasJson(s.kreaLoras)}, {"qwenLoras", lorasJson(s.qwenLoras)}, {"mossLoras", lorasJson(s.mossLoras)}, {"h3Loras", lorasJson(s.h3Loras)}, {"editSteps", s.editSteps}, {"editResolution", s.editResolution}, {"outputDir", ToUtf8(s.outputDir)}, {"comfyFolder", ToUtf8(s.comfyFolder)}, {"desktopExe", ToUtf8(s.desktopExe)}, {"pixelModels", ToUtf8(s.pixelModels)}, {"promptNode", s.promptNode}, {"negativeNode", s.negativeNode}};
+              {"closeWithApp", s.closeWithApp}, {"loraTriggers", s.loraTriggers}, {"vramHeadroom", s.vramHeadroom}, {"ramHeadroom", s.ramHeadroom}, {"background", s.background}, {"showWindow", s.showWindow}, {"startMode", s.startMode}, {"editStyle", s.editStyle}, {"editJump", s.editJump}, {"directOutfit", s.directOutfit}, {"directPose", s.directPose}, {"directExpression", s.directExpression}, {"editUnet", s.editUnet}, {"editModelRev", 2}, {"editLoras", lorasJson(s.editLoras)}, {"promptLoras", lorasJson(s.promptLoras)}, {"promptReplaceLoras", s.promptReplaceLoras}, {"upscaleLoras", lorasJson(s.upscaleLoras)}, {"kreaLoras", lorasJson(s.kreaLoras)}, {"qwenLoras", lorasJson(s.qwenLoras)}, {"mossLoras", lorasJson(s.mossLoras)}, {"h3Loras", lorasJson(s.h3Loras)}, {"editSteps", s.editSteps}, {"editResolution", s.editResolution}, {"editEngine", s.editEngine}, {"outputDir", ToUtf8(s.outputDir)}, {"comfyFolder", ToUtf8(s.comfyFolder)}, {"desktopExe", ToUtf8(s.desktopExe)}, {"pixelModels", ToUtf8(s.pixelModels)}, {"promptNode", s.promptNode}, {"negativeNode", s.negativeNode}};
     std::error_code ec;
     fs::create_directories(fs::path(SettingsPath()).parent_path(), ec);
     std::ofstream out(SettingsPath(), std::ios::binary | std::ios::trunc);
@@ -1960,59 +1982,71 @@ bool DropMissingVeda(const std::string& url, json& wf) {
     return dropped;
 }
 
-bool ComfyReadProgress(ComfyProgress& out) {
-    static ComfyProgress last;
-    static bool lastOk = false;
+// The job running now, from ComfyUI's log, followed from where the job began: a bar left there by the job before is not this one's, and the bars
+// that finish are counted (a music video has one for each clip)
+bool ComfyReadProgress(int activityId, ComfyProgress& out) {
+    static int job = -1;
+    static LONGLONG at = 0;
+    static ComfyProgress cur;
+    static bool finished = false; // the bar in cur reached its end, and was counted
     static unsigned long long readAt = 0;
     const unsigned long long now = GetTickCount64();
-    if (now - readAt < 500) {
-        out = last;
-        return lastOk;
+    if (activityId == job && now - readAt < 500) {
+        out = cur;
+        return true;
     }
     readAt = now;
-    lastOk = false;
-    const std::wstring path = EnvW(L"LOCALAPPDATA") + L"\\Try2Create\\comfy_server.log";
+    const std::wstring test = EnvW(L"MV_TEST_COMFYLOG");
+    const std::wstring path = !test.empty() ? test : EnvW(L"LOCALAPPDATA") + L"\\Try2Create\\comfy_server.log";
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (f == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER size{};
     GetFileSizeEx(f, &size);
-    const LONGLONG want = std::min<LONGLONG>(size.QuadPart, 6000);
+    if (activityId != job) job = activityId, at = size.QuadPart, cur = ComfyProgress(), finished = false;
+    if (size.QuadPart < at) at = 0; // (the log began again)
+    const LONGLONG want = std::min<LONGLONG>(size.QuadPart - at, 262144);
     LARGE_INTEGER pos{};
     pos.QuadPart = size.QuadPart - want;
     SetFilePointerEx(f, pos, nullptr, FILE_BEGIN);
     std::string tail(static_cast<size_t>(want), '\0');
     DWORD got = 0;
-    ReadFile(f, tail.data(), static_cast<DWORD>(want), &got, nullptr);
+    if (want > 0) ReadFile(f, tail.data(), static_cast<DWORD>(want), &got, nullptr);
     CloseHandle(f);
     tail.resize(got);
-    // the last bar: "| a/b [mm:ss<mm:ss, X s/it]" or "..., X it/s]"
-    const size_t bar = tail.rfind("it]");
-    if (bar == std::string::npos) return false;
-    const size_t open = tail.rfind('[', bar);
-    const size_t pipe = open == std::string::npos ? std::string::npos : tail.rfind('|', open);
-    if (pipe == std::string::npos || bar - pipe > 80) return false;
-    int a = 0, b = 0;
-    if (sscanf(tail.c_str() + pipe + 1, " %d/%d", &a, &b) != 2 || b <= 0) return false;
     auto clock = [](const std::string& s) { // "07:46" or "1:02:03"
         int h = 0, m = 0, sec = 0;
         if (sscanf(s.c_str(), "%d:%d:%d", &h, &m, &sec) == 3) return h * 3600.0 + m * 60.0 + sec;
         if (sscanf(s.c_str(), "%d:%d", &m, &sec) == 2) return m * 60.0 + sec;
         return 0.0;
     };
-    const std::string inside = tail.substr(open + 1, bar - open - 1); // "10:12<07:46, 466.90s/" or "00:05<00:10,  1.50"
-    const size_t lt = inside.find('<'), comma = inside.find(',');
-    ComfyProgress p;
-    p.step = a;
-    p.steps = b;
-    if (lt != std::string::npos && comma != std::string::npos && comma > lt) p.leftSeconds = clock(inside.substr(lt + 1, comma - lt - 1));
-    if (comma != std::string::npos) {
-        const double rate = std::atof(inside.c_str() + comma + 1);
-        const bool perStep = tail.compare(bar - 2, 2, "s/") == 0; // "s/it]" against "it/s]"
-        p.secPerStep = perStep ? rate : rate > 0 ? 1.0 / rate : 0.0;
+    // each bar: "| a/b [mm:ss<mm:ss, X s/it]" or "..., X it/s]"
+    size_t scan = 0, used = tail.size() > 200 ? tail.size() - 200 : 0; // (a bar cut in half is read whole next time)
+    while (true) {
+        const size_t slow = tail.find("/it]", scan), fast = tail.find("it/s]", scan), bar = std::min(slow, fast);
+        if (bar == std::string::npos) break;
+        scan = tail.find(']', bar) + 1;
+        const size_t open = tail.rfind('[', bar);
+        const size_t pipe = open == std::string::npos ? std::string::npos : tail.rfind('|', open);
+        int a = 0, b = 0;
+        if (pipe == std::string::npos || bar - pipe > 80 || sscanf(tail.c_str() + pipe + 1, " %d/%d", &a, &b) != 2 || b <= 0 || b > 400) continue; // (more than that: not sampling steps)
+        used = scan;
+        if (b != cur.steps || a < cur.step) { // a new bar
+            if (cur.steps > 0 && !finished) ++cur.barsDone;
+            finished = false;
+            cur.secPerStep = cur.leftSeconds = 0;
+        }
+        cur.step = a, cur.steps = b;
+        const std::string inside = tail.substr(open + 1, bar - open - 1); // "10:12<07:46, 466.90s" or "00:05<00:10,  1.50"
+        const size_t lt = inside.find('<'), comma = inside.find(',');
+        if (lt != std::string::npos && comma != std::string::npos && comma > lt) cur.leftSeconds = clock(inside.substr(lt + 1, comma - lt - 1));
+        if (comma != std::string::npos) {
+            const double rate = std::atof(inside.c_str() + comma + 1);
+            cur.secPerStep = slow < fast ? rate : rate > 0 ? 1.0 / rate : 0.0;
+        }
+        if (a >= b && !finished) finished = true, ++cur.barsDone;
     }
-    last = p;
-    lastOk = true;
-    out = p;
+    at = pos.QuadPart + static_cast<LONGLONG>(used);
+    out = cur;
     return true;
 }
 
@@ -2042,18 +2076,6 @@ ComfyVeda ComfyAskVeda(const std::string& url) {
         if (Http(ep, L"GET", L"/object_info/H3ContinuumSamplerV39", std::string(), nullptr, ct, ctStatus, 5000, nullptr) && ctStatus == 200) {
             const json c = json::parse(ct, nullptr, false);
             v.continuum = c.is_object() && c.contains("H3ContinuumSamplerV39");
-        }
-        std::string mv;
-        DWORD mvStatus = 0;
-        if (Http(ep, L"GET", L"/object_info/MVEx_MaskToLatentSpace", std::string(), nullptr, mv, mvStatus, 5000, nullptr) && mvStatus == 200) {
-            const json m = json::parse(mv, nullptr, false);
-            v.maskvid = m.is_object() && m.contains("MVEx_MaskToLatentSpace");
-        }
-        std::string lp;
-        DWORD lpStatus = 0;
-        if (Http(ep, L"GET", L"/object_info/LivePortraitProcess", std::string(), nullptr, lp, lpStatus, 5000, nullptr) && lpStatus == 200) {
-            const json l = json::parse(lp, nullptr, false);
-            v.liveportrait = l.is_object() && l.contains("LivePortraitProcess");
         }
         std::string ck;
         DWORD ckStatus = 0;
@@ -2201,6 +2223,76 @@ bool BuildQwenEdit(const Endpoint& ep, const ComfySettings& s, const std::vector
                              {"positive", json::array({"20", 0})}, {"negative", json::array({"20", 1})}, {"latent_image", latent}, {"denoise", 1.0}}}};
     out["31"] = {{"class_type", "VAEDecode"}, {"inputs", {{"samples", json::array({"30", 0})}, {"vae", json::array({"3", 0})}}}};
     out["32"] = {{"class_type", "SaveImage"}, {"inputs", {{"images", json::array({"31", 0})}, {"filename_prefix", "Qwen_image_2.1"}}}};
+    return true;
+}
+
+// FLUX 3 Image Klein's edit (2026-10-29, ComfyUI's image_flux3_klein_distilled_image_edit template, after NVAI-open): the pictures as references
+// (ReferenceMultiLatent, 1 MP each), 16 steps, cfg 1, euler / simple. Tested on my pictures against Qwen 2.1 Edit: a red leather jacket where Qwen
+// gave a red raincoat, the car removed as cleanly, a sepia repair that kept its tone; 14-22 s against about 26 s (both swapping models in).
+// Its prompt upsampler (Qwen3.5-9B, 6.7 GB) added 3 s and made nothing better: left out. With a painted mask (maskName; names = the picture and
+// a copy with the painted area flat grey, made by the app): the grey copy is the only reference and the words say to fill the grey area, as
+// NVAI-open fills - the first try, the masked latent with the picture as the reference, kept the car it was asked to take out (FLUX copies its
+// reference) - and the result is pasted into the picture at its own size through the mask grown and softened: outside it nothing changes.
+bool BuildFlux3Edit(const Endpoint& ep, const std::vector<std::string>& names, const std::string& maskName, const std::string& prompt, long long seed, int canvas,
+                    json& out, std::string& error) {
+    nlohmann::ordered_json info;
+    if (!LoadObjectInfo(ep, info, error)) return false;
+    if (!info.contains("ReferenceMultiLatent") || !info.contains("EmptyFlux2LatentImage")) {
+        error = "This ComfyUI does not have the FLUX 3 nodes yet. Update ComfyUI and send again.";
+        return false;
+    }
+    const std::string unet = PickChoice(info, "UNETLoader", "unet_name", {"flux3-image-klein-int8-convrot.safetensors", "flux3-image-klein-nvfp4.safetensors"}, {"flux3-image-klein"});
+    const std::string clip = PickChoice(info, "CLIPLoader", "clip_name", {"qwen3vl_4b_int8_convrot.safetensors", "qwen3vl_4b_fp8_scaled.safetensors"}, {"qwen3vl_4b"});
+    const std::string vae = PickChoice(info, "VAELoader", "vae_name", {"flux2-vae.safetensors"}, {"flux2-vae", "flux2_vae"});
+    if (unet.empty() || clip.empty() || vae.empty()) {
+        error = std::string("ComfyUI does not have ") + (unet.empty() ? "FLUX 3 Image Klein (flux3-image-klein-int8-convrot.safetensors in models/diffusion_models) " : "") +
+                (clip.empty() ? "the Qwen3-VL 4B text encoder (models/text_encoders) " : "") + (vae.empty() ? "the FLUX.2 VAE (flux2-vae.safetensors in models/vae)" : "") +
+                "- download FLUX 3 Image Klein from black-forest-labs/flux-3-image-klein-comfy, or set the editor back to Qwen.";
+        return false;
+    }
+    const bool fill = !maskName.empty();
+    out = json::object();
+    auto L = [](const std::string& id, int k = 0) { return json::array({id, k}); };
+    out["1"] = {{"class_type", "UNETLoader"}, {"inputs", {{"unet_name", unet}, {"weight_dtype", "default"}}}};
+    out["2"] = {{"class_type", "CLIPLoader"}, {"inputs", {{"clip_name", clip}, {"type", "flux3"}, {"device", "default"}}}};
+    out["3"] = {{"class_type", "VAELoader"}, {"inputs", {{"vae_name", vae}}}};
+    out["4"] = {{"class_type", "CLIPTextEncode"}, {"inputs", {{"clip", L("2")}, {"text", prompt}}}};
+    out["5"] = {{"class_type", "ConditioningZeroOut"}, {"inputs", {{"conditioning", L("4")}}}};
+    json ref = {{"positive", L("4")}, {"negative", L("5")}, {"vae", L("3")}, {"resolution", "resize"}, {"resolution.megapixels", 1.0}};
+    for (size_t i = 0; i < names.size() && i < 10; ++i) {
+        const std::string id = std::to_string(10 + i);
+        out[id] = {{"class_type", "LoadImage"}, {"inputs", {{"image", names[i]}}}};
+        if (!fill || i == 1) ref["images.image" + std::to_string(fill ? 0 : i)] = L(id); // (a fill: only the grey copy)
+    }
+    if (fill && names.size() < 2) {
+        error = "A fill needs the picture and its copy with the painted area grey";
+        return false;
+    }
+    out["17"] = {{"class_type", "ReferenceMultiLatent"}, {"inputs", ref}};
+    json latent = L("17", 2), model = L("1");
+    if (fill) {
+        out["41"] = {{"class_type", "LoadImage"}, {"inputs", {{"image", maskName}}}};
+        out["43"] = {{"class_type", "ImageToMask"}, {"inputs", {{"image", L("41")}, {"channel", "red"}}}};
+    } else if (canvas >= 1 && canvas <= 6) { // a new canvas of the chosen shape (as the Qwen edit does)
+        static const double aspects[] = {1.0, 3.0 / 2.0, 1.0, 2.0 / 3.0, 16.0 / 9.0, 9.0 / 16.0, 21.0 / 9.0};
+        auto round16 = [](double v) { return std::max(512, static_cast<int>(std::lround(v / 16.0)) * 16); };
+        out["21"] = {{"class_type", "EmptyFlux2LatentImage"},
+                     {"inputs", {{"width", round16(1024.0 * std::sqrt(aspects[canvas]))}, {"height", round16(1024.0 / std::sqrt(aspects[canvas]))}, {"batch_size", 1}}}};
+        latent = L("21");
+    }
+    out["30"] = {{"class_type", "KSampler"}, {"inputs", {{"model", model}, {"seed", seed}, {"steps", 16}, {"cfg", 1.0}, {"sampler_name", "euler"}, {"scheduler", "simple"},
+                                                        {"positive", L("17", 0)}, {"negative", L("17", 1)}, {"latent_image", latent}, {"denoise", 1.0}}}};
+    out["31"] = {{"class_type", "VAEDecode"}, {"inputs", {{"samples", L("30")}, {"vae", L("3")}}}};
+    json image = L("31");
+    if (fill) { // pasted back through the mask grown a little and softened: outside it the picture is untouched
+        const bool kj = info.contains("GrowMaskWithBlur");
+        if (kj)
+            out["47"] = {{"class_type", "GrowMaskWithBlur"}, {"inputs", {{"mask", L("43")}, {"expand", 6}, {"incremental_expandrate", 0}, {"tapered_corners", true}, {"flip_input", false},
+                                                                         {"blur_radius", 6}, {"lerp_alpha", 1}, {"decay_factor", 1}, {"fill_holes", false}}}};
+        out["48"] = {{"class_type", "ImageCompositeMasked"}, {"inputs", {{"destination", L("10")}, {"source", L("31")}, {"x", 0}, {"y", 0}, {"resize_source", true}, {"mask", kj ? L("47") : L("43")}}}};
+        image = L("48");
+    }
+    out["32"] = {{"class_type", "SaveImage"}, {"inputs", {{"images", image}, {"filename_prefix", fill ? "FLUX3_fill" : "FLUX3_edit"}}}};
     return true;
 }
 
@@ -2613,6 +2705,16 @@ int ComfyService::ClearResults(bool onlyMissing) {
     return static_cast<int>(before - results_.size());
 }
 
+void ComfyService::RestoreResult(const ComfyResult& r) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    results_.push_back(r);
+}
+
+void ComfyService::RemoveResult(const std::wstring& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    results_.erase(std::remove_if(results_.begin(), results_.end(), [&](const ComfyResult& r) { return _wcsicmp(r.localPath.c_str(), path.c_str()) == 0; }), results_.end());
+}
+
 std::vector<std::string> ComfyService::TakeMessages() {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> out;
@@ -2646,8 +2748,10 @@ void ComfyService::Unlabel(int activityId, const std::string& part) {
 
 void ComfyService::FinishPrompt(int activityId, bool ok, const std::string& message, std::vector<ComfyResult> files) {
     std::lock_guard<std::mutex> lock(mutex_);
+    bool quiet = false;
     for (ComfyActivity& a : activity_) {
         if (a.id != activityId) continue;
+        quiet = a.quiet;
         if (a.pending > 0) --a.pending;
         for (const ComfyResult& f : files) {
             const bool seen = std::any_of(a.files.begin(), a.files.end(), [&](const ComfyResult& r) { return r.filename == f.filename && r.subfolder == f.subfolder; });
@@ -2664,6 +2768,7 @@ void ComfyService::FinishPrompt(int activityId, bool ok, const std::string& mess
         }
     }
     for (ComfyResult& f : files) {
+        if (quiet) break;
         // the same file once: a prompt's history can name a file twice (two output nodes, or the history read again)
         const bool seen = std::any_of(results_.begin(), results_.end(), [&](const ComfyResult& r) {
             return !f.localPath.empty() ? _wcsicmp(r.localPath.c_str(), f.localPath.c_str()) == 0
@@ -2672,6 +2777,31 @@ void ComfyService::FinishPrompt(int activityId, bool ok, const std::string& mess
         if (!seen) results_.push_back(std::move(f));
     }
     if (results_.size() > 400) results_.erase(results_.begin(), results_.begin() + (results_.size() - 400));
+}
+
+// Which model a job runs on: the diffusion models and checkpoints its workflow loads, else what its label starts with ("Qwen 2.1", "Video (Star")
+std::string ModelKeyOf(const ComfyJob& job) {
+    if (!job.apiWorkflow.empty()) {
+        const json g = json::parse(job.apiWorkflow, nullptr, false);
+        std::set<std::string> names;
+        if (g.is_object()) {
+            for (auto& [id, n] : g.items()) {
+                if (!n.is_object() || !n.contains("inputs") || !n["inputs"].is_object()) continue;
+                for (const char* k : {"unet_name", "ckpt_name"})
+                    if (n["inputs"].contains(k) && n["inputs"][k].is_string()) names.insert(n["inputs"][k].get<std::string>());
+            }
+        }
+        std::string key;
+        for (const std::string& n : names) key += n + "|";
+        if (!key.empty()) return key;
+    }
+    return job.label.substr(0, job.label.find(':'));
+}
+
+int ComfyService::WaitingInComfyLocked() const {
+    int n = 0;
+    for (const ComfyActivity& a : activity_) n += a.state == ComfyState::Queued ? 1 : 0;
+    return n;
 }
 
 int ComfyService::Send(const ComfySettings& settings, ComfyJob job) {
@@ -2684,6 +2814,9 @@ int ComfyService::Send(const ComfySettings& settings, ComfyJob job) {
         a.id = job.activityId;
         a.label = job.label.empty() ? std::string("prompt") : job.label;
         a.prompt = job.prompt;
+        a.quiet = job.quiet;
+        a.stages = job.stages;
+        a.finishing = job.finishing;
         a.address = settings.url;
         a.workflow = job.upscale > 0 ? std::string("Upscale (resize, then MOSS-Image redraws the detail)") : !job.images.empty() ? "Qwen Image 2.1 Edit (" + std::to_string(std::min<size_t>(job.images.size(), 10)) + (job.images.size() == 1 ? " picture)" : " pictures)") : settings.useLastRun ? "the workflow ComfyUI ran last" : !settings.savedWorkflow.empty() ? settings.savedWorkflow : ToUtf8(fs::path(settings.workflowPath).filename().wstring());
         a.state = ComfyState::Waiting;
@@ -2691,7 +2824,8 @@ int ComfyService::Send(const ComfySettings& settings, ComfyJob job) {
         a.startedMs = NowMs();
         activity_.push_back(std::move(a));
         if (activity_.size() > 200) activity_.erase(activity_.begin());
-        queue_.push_back({settings, std::move(job)});
+        const std::string model = ModelKeyOf(job);
+        queue_.push_back({settings, std::move(job), model});
         address_ = settings.url;
     }
     ++active_;
@@ -2772,11 +2906,26 @@ void ComfyService::Loop() {
         bool have = false;
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            cv_.wait_for(lock, std::chrono::milliseconds(watching_.empty() ? 1000 : 1500), [this]() { return stop_ || !queue_.empty(); });
+            // Jobs grouped by model (2026-10-28): ComfyUI gets one of ours to wait behind the one running, and the next one sent is one on the model
+            // already loaded when there is one - Krea, H3, Krea sent in that order loaded Krea's 13 GB twice and H3's 15-20 GB between (a cold
+            // Krea picture took 22 s against 7 s warm, an H3 clip 46 s against 30 s). The rest keep their order; a job is passed over 3 times at most.
+            cv_.wait_for(lock, std::chrono::milliseconds(watching_.empty() ? 1000 : 1500), [this]() { return stop_ || (!queue_.empty() && WaitingInComfyLocked() == 0); });
             if (stop_) return;
-            if (!queue_.empty()) {
-                q = std::move(queue_.front());
-                queue_.pop_front();
+            if (!queue_.empty() && WaitingInComfyLocked() == 0) {
+                size_t pick = 0;
+                static const bool noGrouping = GetEnvironmentVariableW(L"MV_NO_GROUPING", nullptr, 0) > 0; // tests: in the order sent, to compare
+                if (!noGrouping && !lastModel_.empty() && queue_.front().model != lastModel_ && queue_.front().skipped < 3) {
+                    for (size_t i = 1; i < queue_.size(); ++i) {
+                        if (queue_[i].model == lastModel_) {
+                            pick = i;
+                            break;
+                        }
+                    }
+                }
+                if (pick) ++queue_.front().skipped;
+                q = std::move(queue_[pick]);
+                queue_.erase(queue_.begin() + static_cast<std::ptrdiff_t>(pick));
+                lastModel_ = q.model;
                 have = true;
             }
         }
@@ -3021,6 +3170,21 @@ void ComfyService::Process(Queued& q) {
             }
             if (wf.contains("32")) wf["32"]["inputs"]["filename_prefix"] = q.job.savePrefix.empty() ? std::string("PixelArt/anim") : q.job.savePrefix;
             engine = "Qwen Image 2.1 Edit, no LoRAs (" + std::to_string(q.job.sheetW) + " x " + std::to_string(q.job.sheetH) + ")";
+        } else if (edit && (q.job.fillMask || (q.job.editEngine.empty() ? q.settings.editEngine : q.job.editEngine) == "flux3")) { // FLUX 3 Image Klein: chosen as the editor, or a painted mask to fill
+            const long long seed = q.job.seed >= 0 ? q.job.seed + i : static_cast<long long>(Rng()() % (1ULL << 52));
+            std::vector<std::string> pics = editNames;
+            std::string mask;
+            if (q.job.fillMask && pics.size() >= 3) mask = pics.back(), pics.pop_back(); // (the picture, its grey copy, the mask)
+            engine = mask.empty() ? "FLUX 3 Image Klein" : "FLUX 3 Image Klein, the painted area";
+            if (!BuildFlux3Edit(ep, pics, mask, q.job.prompt, seed, q.job.canvas, wf, error)) {
+                // FLUX 3 is the default editor: a PC without its files edits with Qwen instead (a painted-area fill needs FLUX 3 itself)
+                std::string qwenError;
+                if (!mask.empty() || !BuildQwenEdit(ep, q.settings, editNames, q.job.prompt, seed, q.job.canvas, wf, qwenError)) {
+                    fail(mask.empty() ? qwenError : error);
+                    return;
+                }
+                engine.clear();
+            }
         } else if (edit) {
             const long long seed = static_cast<long long>(Rng()() % (1ULL << 52));
             if (!BuildQwenEdit(ep, q.settings, editNames, q.job.prompt, seed, q.job.canvas, wf, error)) {
@@ -3159,6 +3323,14 @@ void ComfyService::Process(Queued& q) {
             fail("ComfyUI refused it: " + QueueError(response, status));
             return;
         }
+        {
+            int passes = 0; // (for the job tracker)
+            for (const auto& node : wf)
+                if (node.is_object() && node.value("class_type", std::string()).find("Sampler") != std::string::npos && node.value("class_type", std::string()).find("Select") == std::string::npos) ++passes;
+            std::lock_guard<std::mutex> lock(mutex_);
+            for (ComfyActivity& a : activity_)
+                if (a.id == q.job.activityId) a.passes += passes, ++a.prompts;
+        }
         json reply = json::parse(response, nullptr, false);
         const std::string id = reply.is_object() ? reply.value("prompt_id", std::string()) : std::string();
         const int number = reply.is_object() ? reply.value("number", 0) : 0;
@@ -3254,7 +3426,7 @@ std::wstring ResolveResultFile(const ComfySettings& s, const Endpoint& ep, const
     std::string response, error;
     DWORD status = 0;
     const std::string query = "/view?filename=" + Enc(r.filename) + "&subfolder=" + Enc(r.subfolder) + "&type=" + Enc(r.type);
-    if (Http(ep, L"GET", ToWide(query), std::string(), nullptr, response, status, 60000, &error) && status == 200 && !response.empty() && response.size() < 32u * 1024 * 1024) {
+    if (Http(ep, L"GET", ToWide(query), std::string(), nullptr, response, status, 60000, &error) && status == 200 && !response.empty() && response.size() < 128u * 1024 * 1024) {
         std::ofstream out(target, std::ios::binary | std::ios::trunc);
         if (out) {
             out.write(response.data(), static_cast<std::streamsize>(response.size()));
@@ -3324,7 +3496,7 @@ void ComfyService::Poll() {
                     std::vector<ComfyResult> got;
                     if (h.contains("outputs") && h["outputs"].is_object()) {
                         for (auto it = h["outputs"].begin(); it != h["outputs"].end(); ++it) {
-                            for (const char* kind : {"images", "gifs", "videos", "video", "files", "audio"}) { // pictures, video clips and songs
+                            for (const char* kind : {"images", "gifs", "videos", "video", "files", "audio", "3d"}) { // pictures, video clips, songs and 3D files
                                 if (!it.value().contains(kind) || !it.value()[kind].is_array()) continue;
                                 for (const json& im : it.value()[kind]) {
                                     if (!im.is_object()) continue;
@@ -3341,7 +3513,8 @@ void ComfyService::Poll() {
                                     r.subfolder = im.value("subfolder", std::string());
                                     r.type = im.value("type", std::string("output"));
                                     r.audio = std::string(kind) == "audio" || LooksLikeAudio(r.filename);
-                                    r.video = !r.audio && (std::string(kind) != "images" || LooksLikeVideo(r.filename));
+                                    r.model3d = std::string(kind) == "3d";
+                                    r.video = !r.audio && !r.model3d && (std::string(kind) != "images" || LooksLikeVideo(r.filename));
                                     // (not "input": LoadVideo shows the clip it loaded, a Star / Swap's own guide clip, as if it were made)
                                     if (!r.filename.empty() && r.type != "temp" && r.type != "input") got.push_back(std::move(r));
                                 }

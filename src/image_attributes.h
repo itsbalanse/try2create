@@ -14,6 +14,11 @@ void FileTimeYearMonth(std::filesystem::file_time_type t, int& year, int& month)
 // (6 means six or more / a crowd).
 int EstimatePeopleCount(const std::string& positivePrompt);
 
+// Helper pictures: what ComfyUI saves along the way, not results. 0 no, 1 depth map, 2 mask, 3 pose. HelperPixels looks at a thumbnail (RGBA);
+// HelperKind takes that with the file's path below the opened folder and its prompt (black and white art someone asked for stays a picture).
+int HelperPixels(const unsigned char* rgba, int w, int h);
+int HelperKind(const std::wstring& relativePath, int pixels, const std::string& positivePrompt);
+
 // "unknown", "none", "1 (solo)", "2", ..., "6+".
 std::string PeopleLabel(int count);
 

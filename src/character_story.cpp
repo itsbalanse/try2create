@@ -378,7 +378,7 @@ void DrawExtractSection(AppState& app) {
         ImGui::TextUnformatted(U8(fs::path(g_ex.picture).filename().wstring()).c_str());
     } else {
         ImGui::BeginGroup();
-        ImGui::TextDisabled("Pick a picture with people or creatures in it.");
+        ImGui::TextDisabled("Pick a picture with people or creatures in it (or drag one onto this page).");
     }
     if (ImGui::SmallButton("The gallery's picture")) {
         if (app.selectedIndex >= 0 && app.selectedIndex < static_cast<int>(app.entries.size())) OpenCharacterExtract(app, app.entries[app.selectedIndex].path);
@@ -388,6 +388,13 @@ void DrawExtractSection(AppState& app) {
     if (ImGui::SmallButton("A file...")) {
         const std::wstring f = OpenImageFileDialog(GetActiveWindow());
         if (!f.empty()) OpenCharacterExtract(app, f);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Paste##extract")) {
+        std::string msg;
+        const std::wstring p = PasteBoardImage(msg);
+        if (!p.empty()) OpenCharacterExtract(app, p);
+        else app.SetStatus(msg.empty() ? "No picture on the clipboard" : msg);
     }
     if (!g_ex.picture.empty()) {
         ImGui::SameLine();

@@ -1,4 +1,4 @@
-// First-run setup: "Set up Try2Create" (2026-10-28: a first launch should be easy and friendly, with no file to put anywhere by hand and no
+﻿// First-run setup: "Set up Try2Create" (2026-10-28: a first launch should be easy and friendly, with no file to put anywhere by hand and no
 // wall of errors). A fresh PC had nothing to tell it that ComfyUI is needed, no way to
 // get the models every page expects (they had to be put in by hand), no ffmpeg, and no word on what the GPU can run.
 // Five steps in one window: the PC (GPU, VRAM, RAM: what will run well), ComfyUI (found, or install / pick a portable folder / an address),
@@ -128,6 +128,12 @@ const std::vector<Pack>& Packs() {
           {"vae", "minimax_h3_video_vae_int8_convrot.safetensors", "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_int8_convrot.safetensors", 2.81},
           {"vae", "minimax_h3_audio_vae_fp32.safetensors", "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors", 0.61},
           {"loras", "MiniMax-H3-FL2VA-Acc-8Step_pruned_comfy.safetensors", "https://huggingface.co/Kijai/MiniMax-H3-experimental/resolve/main/loras/MiniMax-H3-FL2VA-Acc-8Step_pruned_comfy.safetensors", 1.6}}},
+        {"3D", "TripoSplat: one picture becomes a 3D object you can turn around, on the 3D page", 8, 16, 14, "the TripoSplat licence (see its page)", "https://huggingface.co/VAST-AI/TripoSplat",
+         {{"diffusion_models", "triposplat_fp16.safetensors", "https://huggingface.co/VAST-AI/TripoSplat/resolve/main/diffusion_models/triposplat_fp16.safetensors", 0.74},
+          {"vae", "triposplat_vae_decoder_fp16.safetensors", "https://huggingface.co/VAST-AI/TripoSplat/resolve/main/vae/triposplat_vae_decoder_fp16.safetensors", 0.58},
+          {"vae", "flux2-vae.safetensors", "https://huggingface.co/VAST-AI/TripoSplat/resolve/main/vae/flux2-vae.safetensors", 0.34},
+          {"clip_vision", "dino_v3_vit_h.safetensors", "https://huggingface.co/VAST-AI/TripoSplat/resolve/main/clip_vision/dino_v3_vit_h.safetensors", 1.68},
+          {"background_removal", "birefnet.safetensors", "https://huggingface.co/VAST-AI/TripoSplat/resolve/main/background_removal/birefnet.safetensors", 0.44}}},
         {"Music", "MiniMax Music 3: songs with lyrics on the Sound page", 8, 16, 11, "the MiniMax Music licence (see its page)", "https://huggingface.co/Comfy-Org/MiniMax-Music-3",
          {{"vae", "minimax_music3_dav.safetensors", "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/vae/minimax_music3_dav.safetensors", 0.2},
           {"diffusion_models", "minimax_music3_dit_int8_convrot.safetensors", "https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/diffusion_models/minimax_music3_dit_int8_convrot.safetensors", 2.5},
@@ -159,6 +165,7 @@ struct Downloads {
     double nowGb = 0, doneGb = 0, totalGb = 0;
     std::vector<std::string> failed;
     std::string ffmpeg;    // "", "downloading", "ok", "error: ..."
+    std::string photocraft; // the same
     std::string writer;    // the same for the prompt writer; "downloading: <what>" while it goes
     std::wstring writerPart;
 };
@@ -300,6 +307,29 @@ void DownloadFfmpeg() {
         fs::remove_all(tmp, ec);
         std::lock_guard<std::mutex> lock(g_dl.m);
         g_dl.ffmpeg = result;
+    }).detach();
+}
+
+// PhotoCraft (the version the app is tested with, MIT or Apache-2.0): its portable zip into %LOCALAPPDATA%\Try2Create\tools\photocraft
+void DownloadPhotocraft() {
+    {
+        std::lock_guard<std::mutex> lock(g_dl.m);
+        if (g_dl.photocraft == "downloading") return;
+        g_dl.photocraft = "downloading";
+    }
+    std::thread([]() {
+        const std::wstring dir = DataDir() + L"\\tools\\photocraft", zip = DataDir() + L"\\tools\\photocraft.zip";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        std::string result = "ok", out;
+        if (!RunCurl(L"https://github.com/storytold/photocraft/releases/download/v0.6.0/photocraft-0.6.0-windows-x64-portable.zip", zip)) result = "error: the download failed";
+        else {
+            RunCaptureHidden(L"tar.exe -xf \"" + zip + L"\" -C \"" + dir + L"\"", out, true);
+            if (FindPhotocraft(L"photocraft-cli.exe").empty()) result = "error: the zip did not hold photocraft-cli.exe";
+        }
+        fs::remove(zip, ec);
+        std::lock_guard<std::mutex> lock(g_dl.m);
+        g_dl.photocraft = result;
     }).detach();
 }
 
@@ -532,7 +562,7 @@ void StepComfy(AppState& app) {
                 if (!ComfyCheck(s.url, msg)) { // not running: start it, then wait for it (the first start installs things: minutes)
                     if (!ComfyStart(s, msg)) return "error:Could not start it: " + msg;
                     for (int i = 0; i < 180 && !ComfyCheck(s.url, msg); ++i) Sleep(2000);
-                    if (!ComfyCheck(s.url, msg)) return std::string("error:It did not answer within 6 minutes. Start ComfyUI Desktop once yourself (its first start finishes installing), then check again.");
+                    if (!ComfyCheck(s.url, msg)) return std::string("error:It did not answer within 6 minutes. Start ComfyUI once yourself (its first start finishes installing), then check again.");
                 }
                 const size_t v = msg.find("ComfyUI ");
                 return "ok:" + (v == std::string::npos ? std::string("(version unknown)") : msg.substr(v + 8));
@@ -708,7 +738,7 @@ void StepModels(AppState& app) {
 }
 
 void StepHelpers() {
-    ImGui::TextUnformatted("Small programs the app uses next to ComfyUI. Both are optional: skip them and get them later from here when a page asks.");
+    ImGui::TextUnformatted("Small programs the app uses next to ComfyUI. All optional: skip them and get them later from here when a page asks.");
     ImGui::Spacing();
     std::string st;
     {
@@ -728,6 +758,23 @@ void StepHelpers() {
     Wrapped(ui::kTextDim, "Cuts, joins and resizes videos: long videos in parts, Make it crisp, the quick upscale, Star in a video, and videos Windows cannot play "
                           "by itself. From github.com/BtbN/FFmpeg-Builds (GPL); it goes in the app's own folder, nothing is installed.");
     if (st.rfind("error", 0) == 0) Wrapped(ui::kBad, "%s", st.c_str());
+    ImGui::Unindent(ui::Dp(28.0f));
+    ImGui::Spacing();
+    std::string pst;
+    {
+        std::lock_guard<std::mutex> lock(g_dl.m);
+        pst = g_dl.photocraft;
+    }
+    const bool haveCraft = !FindPhotocraft(L"photocraft-cli.exe").empty();
+    Mark(haveCraft ? 2 : pst == "downloading" ? -1 : 1);
+    ImGui::TextUnformatted("PhotoCraft");
+    ImGui::SameLine();
+    if (haveCraft) ImGui::TextColored(ui::kGood, "ready");
+    else if (pst == "downloading") ImGui::TextColored(ui::kAccentHover, "downloading (75 MB)...");
+    else if (Btn("Download it (75 MB)", true)) DownloadPhotocraft();
+    ImGui::Indent(ui::Dp(28.0f));
+    Wrapped(ui::kTextDim, "The text layers on Edits > Designs and on song covers. From github.com/storytold/photocraft (MIT or Apache-2.0), into the app's own folder.");
+    if (pst.rfind("error", 0) == 0) Wrapped(ui::kBad, "%s", pst.c_str());
     ImGui::Unindent(ui::Dp(28.0f));
     ImGui::Spacing();
     std::string wst;
@@ -801,6 +848,19 @@ void StepStart(AppState& app) {
 }
 
 } // namespace
+
+// A pack's missing files, started from the page that needs them (no trip through the setup)
+void SetupDownloadPack(const char* name) {
+    const std::wstring models = ComfyModelsDir();
+    if (models.empty()) return;
+    for (const Pack& p : Packs()) {
+        if (strcmp(p.name, name) != 0) continue;
+        std::vector<File> files;
+        for (const File& f : p.files)
+            if (!FileThere(models, f)) files.push_back(f);
+        Enqueue(models, files);
+    }
+}
 
 void OpenSetup(int step) {
     g_s.open = true;

@@ -635,7 +635,7 @@ void DrawVideoTools(AppState& app, const std::string& sam3) {
             }
             if (g_bg.onto == 4 && !g_bg.picture.empty()) ImGui::TextDisabled("Background: %s", U8(fs::path(g_bg.picture).filename().wstring()).c_str());
             if (g_bg.onto == 0) ImGui::TextDisabled("A .webm with transparency: drop it over anything in an editor (CapCut, Premiere, DaVinci...).");
-            if (sam3.empty()) ImGui::TextColored(ui::kWarn, "Needs SAM 3 in ComfyUI (Star in a video's person masking set-up), and ComfyUI running.");
+            if (sam3.empty()) ImGui::TextColored(ui::kWarn, "Needs SAM 3 in ComfyUI (sam3.1_multiplex_fp16 in checkpoints), and ComfyUI running.");
             const bool busy = Busy();
             ImGui::BeginDisabled(busy || sam3.empty() || !g_bg.keep[0]);
             if (ui::PrimaryButton(busy ? "Busy (one at a time)..." : "Remove the background")) {

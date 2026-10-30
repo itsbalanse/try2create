@@ -21,6 +21,7 @@
 #include "pixel_art.h"
 #include "ui_extra.h"
 #include "ui_theme.h"
+#include "video_util.h"
 #include "vision_prompt.h"
 #include "win_dialogs.h"
 
@@ -51,17 +52,12 @@ std::string Trim(const std::string& s) {
 }
 
 // ------------------------------------------------------------------- photocraft-cli
-// It sits in tools\photocraft (any version folder) next to this program.
+// It sits in a tools\photocraft folder: the setup's download, or next to this program.
 std::wstring PhotocraftExe(const wchar_t* name) {
-    wchar_t buf[MAX_PATH * 2] = {};
-    GetModuleFileNameW(nullptr, buf, MAX_PATH * 2);
-    const fs::path root = fs::path(buf).parent_path() / L"tools" / L"photocraft";
-    std::error_code ec;
-    if (fs::exists(root / name, ec)) return (root / name).wstring();
-    for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; it != end && !ec; it.increment(ec)) {
-        if (it->is_regular_file(ec) && _wcsicmp(it->path().filename().c_str(), name) == 0) return it->path().wstring();
-    }
-    return {};
+    static std::map<std::wstring, std::pair<std::wstring, ULONGLONG>> seen; // (asked every frame: looked for every few seconds while it is missing)
+    auto& s = seen[name];
+    if (s.first.empty() && (!s.second || GetTickCount64() - s.second > 3000)) s = {FindPhotocraft(name), GetTickCount64()};
+    return s.first;
 }
 
 // One argument quoted the way CommandLineToArgvW reads it back.
@@ -989,7 +985,7 @@ void StartPlan(AppState& app, const std::string& failure) {
 void StartRun(AppState& app) {
     const std::wstring cli = PhotocraftExe(L"photocraft-cli.exe");
     if (cli.empty()) {
-        g_d.error = "photocraft-cli.exe was not found in the tools\\photocraft folder next to this program";
+        g_d.error = "PhotoCraft is not set up yet: Help > Set up Try2Create, Helpers, downloads it (75 MB)";
         return;
     }
     ++g_d.round;
@@ -1138,7 +1134,7 @@ void OpenDesigner(AppState& app, const std::vector<std::wstring>& paths) {
     for (size_t i = 1; i < paths.size(); ++i) AddPart(paths[i]);
     if (!g_d.ref.ready && !g_d.refFut.valid()) {
         const std::wstring cli = PhotocraftExe(L"photocraft-cli.exe");
-        if (cli.empty()) g_d.error = "PhotoCraft is not installed: photocraft-cli.exe belongs in the tools\\photocraft folder next to this program";
+        if (cli.empty()) g_d.error = "PhotoCraft is not set up yet: Help > Set up Try2Create, Helpers, downloads it (75 MB)";
         else g_d.refFut = std::async(std::launch::async, LoadReference, cli);
     }
 }

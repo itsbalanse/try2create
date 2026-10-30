@@ -3890,7 +3890,7 @@ void DrawBoardTab(AppState& app, float height) {
     {
         // Ctrl+Z undoes, Ctrl+Y / Ctrl+Shift+Z redoes (not while a text box is being typed in: it has its own undo)
         ImGuiIO& io = ImGui::GetIO();
-        if (io.KeyCtrl && !io.WantTextInput) {
+        if (io.KeyCtrl && !io.WantTextInput && app.activeTab == 3) { // (only on the page in focus: elsewhere Ctrl+Z goes back a layout)
             if (ImGui::IsKeyPressed(ImGuiKey_Z)) {
                 if (io.KeyShift) Redo(app, st);
                 else Undo(app, st);

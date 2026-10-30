@@ -219,3 +219,87 @@ std::string FormatLocalDateTime(std::filesystem::file_time_type t) {
     snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d", local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute);
     return buf;
 }
+
+// Measured on a thumbnail: no colour at all, then which of the three it looks like. A depth map has no fine detail (a black and white photo does), a mask
+// is two tones with little edge, a pose drawing is thin lines on white, an OpenPose skeleton is coloured sticks on black.
+int HelperPixels(const unsigned char* px, int w, int h) {
+    if (!px || w < 16 || h < 16) return 0;
+    const int n = w * h;
+    int see = 0, gray = 0, vivid = 0, black = 0, white = 0, light = 0, line = 0, edges = 0;
+    int texture = 0; // fine detail: small steps between neighbours (a depth map has sharp outlines, but nothing inside them)
+    auto lum = [&](int x, int y) {
+        const unsigned char* p = px + (static_cast<size_t>(y) * w + x) * 4;
+        return (p[0] * 77 + p[1] * 150 + p[2] * 29) >> 8;
+    };
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const unsigned char* p = px + (static_cast<size_t>(y) * w + x) * 4;
+            if (p[3] < 250) continue; // (see-through: a cut-out, counted below)
+            ++see;
+            const int hi = std::max({p[0], p[1], p[2]}), lo = std::min({p[0], p[1], p[2]}), l = lum(x, y);
+            if (hi - lo <= 10) ++gray;
+            else if (hi - lo > 60) ++vivid;
+            if (l < 14) ++black;
+            if (l > 242) ++white;
+            if (l > 225) ++light;
+            else if (l > 14 && l < 215) ++line;
+            if (x + 1 < w && y + 1 < h) {
+                const int d = std::abs(l - lum(x + 1, y)) + std::abs(l - lum(x, y + 1));
+                if (d >= 4 && d <= 48) ++texture;
+                if (d > 48) ++edges;
+            }
+        }
+    if (see < n * 0.95) return 0;
+    const double N = see;
+    if (black > N * 0.72 && vivid > N * 0.008 && black + vivid > N * 0.85) return 3; // coloured sticks on black
+    if (gray < N * 0.985) return 0;
+    if (black + white > N * 0.96 && edges < N * 0.07) return 2;
+    if (light > N * 0.62 && black < N * 0.04 && line > N * 0.01 && line < N * 0.34) return 3; // lines on white
+    if (texture < N * 0.25) return 1; // (measured: depth maps 0.12-0.19, black and white photos 0.43-0.67, one blurred hard still 0.57)
+    return 0;
+}
+
+namespace {
+bool OneOf(const std::string& s, std::initializer_list<const char*> list) {
+    for (const char* w : list)
+        if (s == w) return true;
+    return false;
+}
+}
+
+int HelperKind(const std::wstring& relativePath, int pixels, const std::string& positivePrompt) {
+    std::string path; // (the names are ASCII: anything else just never matches)
+    for (wchar_t c : relativePath) path += c < 128 ? static_cast<char>(std::tolower(static_cast<int>(c))) : '?';
+    auto kindOf = [](const std::string& t) {
+        if (OneOf(t, {"depth", "depths", "depthmap", "depthmaps", "zdepth"})) return 1;
+        if (OneOf(t, {"mask", "masks", "matte", "mattes", "trimap"})) return 2;
+        if (OneOf(t, {"pose", "poses", "openpose", "dwpose", "canny", "lineart", "normalmap", "controlnet"})) return 3;
+        return 0;
+    };
+    size_t start = 0;
+    for (size_t at; (at = path.find_first_of("\\/", start)) != std::string::npos; start = at + 1) // a folder of them
+        if (const int k = kindOf(path.substr(start, at - start))) return k;
+    std::string stem = path.substr(start);
+    if (const size_t dot = stem.rfind('.'); dot != std::string::npos) stem.resize(dot);
+    if (const size_t fr = stem.rfind(".frame"); fr != std::string::npos && (stem.find(".mp4") != std::string::npos || stem.find(".webm") != std::string::npos)) return 2; // (a video's own frames)
+    std::vector<std::string> words;
+    std::string cur;
+    for (char c : stem + " ") {
+        if (std::isalnum(static_cast<unsigned char>(c))) cur += c;
+        else if (!cur.empty()) words.push_back(cur), cur.clear();
+    }
+    auto allDigits = [](const std::string& s) { return s.find_first_not_of("0123456789") == std::string::npos; };
+    bool counted = false; // (ComfyUI's _00012_ on the end)
+    while (!words.empty() && allDigits(words.back())) words.pop_back(), counted = true;
+    if (!words.empty() && !allDigits(words.front())) { // (a number first is "00497-1436313974-a woman in a mask": a prompt, not a name)
+        if (const int k = kindOf(words.back()); k && (counted || words.size() <= 4)) return k;
+        if (const int k = kindOf(words.front()); k && words.size() <= 4) return k;
+    }
+    if (pixels == 0) return 0;
+    std::string low = positivePrompt;
+    for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (const char* w : {"monochrome", "greyscale", "grayscale", "black and white", "black-and-white", "b&w", "noir", "sketch", "line art", "lineart", "manga", "coloring", "colouring",
+                          "ink ", "pencil", "silhouette", "charcoal", "storyboard"})
+        if (low.find(w) != std::string::npos) return 0;
+    return pixels;
+}

@@ -10,6 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $commit = '5f8b48a3b54978b1b7d81ea0ddf5f581752a6218' # v1.0.2, 25 Sep 2026
 $comfy = Join-Path $Install 'ComfyUI'
+if (Test-Path (Join-Path $Install 'main.py')) { $comfy = $Install } # (a git clone: main.py in the folder itself)
 if (-not $Nodes) { $Nodes = Join-Path $comfy 'custom_nodes' }
 
 function Say($text) {
