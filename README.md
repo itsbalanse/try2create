@@ -26,7 +26,7 @@ More screenshots are in [docs/screenshots](docs/screenshots).
 
 ## What you need
 
-- Windows 10 or 11, 64-bit
+- Windows 10 or 11, 64-bit (the "N" editions need Microsoft's Media Feature Pack first)
 - [ComfyUI](https://www.comfy.org/download): ComfyUI Desktop is found by itself; a portable ComfyUI, a git clone or one at another address is picked in the setup
 - An NVIDIA GPU. Pictures and edits are fine on 12-16 GB; the video features want 24 GB.
 - Plenty of RAM for video (ComfyUI holds big models in RAM: 64 GB or more for MiniMax H3)
